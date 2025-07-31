@@ -27,6 +27,12 @@
         path: /usr/local/bin/rke2
         mode: '0755'
 
+    - name: Create systemd directory
+      file:
+        path: /etc/systemd/system
+        state: directory
+        mode: '0755'
+
     - name: Create RKE2 server systemd service
       copy:
         content: |
@@ -44,7 +50,6 @@
           Type=notify
           EnvironmentFile=-/etc/default/rke2-server
           EnvironmentFile=-/etc/sysconfig/rke2-server
-          EnvironmentFile=-/usr/local/lib/systemd/system/rke2-server.env
           KillMode=process
           Delegate=yes
           LimitNOFILE=1048576
@@ -54,11 +59,10 @@
           TimeoutStartSec=0
           Restart=always
           RestartSec=5s
-          ExecStartPre=/bin/sh -xc '! /usr/bin/systemctl is-enabled --quiet nm-cloud-setup.service'
           ExecStartPre=-/sbin/modprobe br_netfilter
           ExecStartPre=-/sbin/modprobe overlay
           ExecStart=/usr/local/bin/rke2 server
-        dest: /usr/local/lib/systemd/system/rke2-server.service
+        dest: /etc/systemd/system/rke2-server.service
         mode: '0644'
 
     - name: Create RKE2 server configuration
