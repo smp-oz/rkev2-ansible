@@ -135,6 +135,31 @@
         remote_src: yes
         mode: '0600'
 
+    - name: Download and install Helm
+      get_url:
+        url: "https://get.helm.sh/helm-v3.12.0-linux-amd64.tar.gz"
+        dest: /tmp/helm.tar.gz
+        mode: '0644'
+
+    - name: Extract Helm binary
+      unarchive:
+        src: /tmp/helm.tar.gz
+        dest: /tmp
+        remote_src: yes
+
+    - name: Install Helm binary
+      copy:
+        src: /tmp/linux-amd64/helm
+        dest: /var/lib/rancher/rke2/bin/helm
+        mode: '0755'
+        remote_src: yes
+
+    - name: Create Helm symlink
+      file:
+        src: /var/lib/rancher/rke2/bin/helm
+        dest: /usr/local/bin/helm
+        state: link
+
     - name: Get cluster token
       slurp:
         src: /var/lib/rancher/rke2/server/node-token
@@ -147,6 +172,7 @@
           - "Server IP: {{ ansible_default_ipv4.address }}"
           - "Cluster token available for Kubernetes nodes"
           - "kubectl available at /usr/local/bin/kubectl"
+          - "Helm available at /usr/local/bin/helm"
           - "Kubeconfig: /etc/rancher/rke2/rke2.yaml"
 
     - name: Verify cluster is ready
