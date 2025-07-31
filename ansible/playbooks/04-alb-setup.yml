@@ -1,0 +1,94 @@
+---
+- name: Setup ALB Target Group for Rancher Access
+  hosts: rke2_server
+  become: yes
+  gather_facts: yes
+  vars:
+    master_nodes:
+      - "10.122.10.46"
+      - "10.122.11.81" 
+      - "10.122.12.28"
+    
+  tasks:
+    - name: Configure nginx-ingress for ALB
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl patch configmap rke2-ingress-nginx-controller -n kube-system --patch='
+        data:
+          use-forwarded-headers: "true"
+          compute-full-forwarded-for: "true"
+          proxy-real-ip-cidr: "10.122.0.0/16"
+          ssl-redirect: "true"
+          server-tokens: "false"
+        '
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Set nginx-ingress service to NodePort
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl patch svc rke2-ingress-nginx-controller -n kube-system -p '{"spec":{"type":"NodePort"}}'
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Get nginx-ingress NodePort
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl get svc rke2-ingress-nginx-controller -n kube-system -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}'
+      register: nginx_nodeport
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Display nginx-ingress configuration
+      debug:
+        msg:
+          - "Nginx-ingress configured for ALB integration"
+          - "Service type: NodePort"
+          - "HTTPS NodePort: {{ nginx_nodeport.stdout }}"
+          - "Configure ALB Target Group with:"
+          - "  - Protocol: HTTPS"
+          - "  - Port: {{ nginx_nodeport.stdout }}"
+          - "  - Targets: {{ master_nodes | join(', ') }}"
+
+    - name: Create health check endpoint information
+      debug:
+        msg:
+          - "ALB Health Check Configuration:"
+          - "  - Protocol: HTTPS"
+          - "  - Port: {{ nginx_nodeport.stdout }}"
+          - "  - Path: /healthz"
+          - "  - Success Codes: 200"
+          - "  - Healthy Threshold: 2"
+          - "  - Unhealthy Threshold: 2"
+          - "  - Timeout: 5 seconds"
+          - "  - Interval: 30 seconds"
+
+    - name: Display AWS CLI commands for ALB setup
+      debug:
+        msg:
+          - "Use these AWS CLI commands to configure ALB:"
+          - ""
+          - "# Get Target Group ARN"
+          - "aws elbv2 describe-target-groups --names rancher-tg --query 'TargetGroups[0].TargetGroupArn' --output text"
+          - ""
+          - "# Update Target Group health check"
+          - "aws elbv2 modify-target-group --target-group-arn <ARN> --health-check-protocol HTTPS --health-check-port {{ nginx_nodeport.stdout }} --health-check-path /healthz"
+          - ""
+          - "# Register master nodes as targets"
+          - "aws elbv2 register-targets --target-group-arn <ARN> --targets {% for node in master_nodes %}Id={{ node }},Port={{ nginx_nodeport.stdout }}{% if not loop.last %} {% endif %}{% endfor %}"
+          - ""
+          - "# Check target health"
+          - "aws elbv2 describe-target-health --target-group-arn <ARN>"
+
+    - name: Test nginx-ingress connectivity from masters
+      shell: |
+        curl -k -s -o /dev/null -w "%{http_code}" https://{{ item }}:{{ nginx_nodeport.stdout }}/healthz
+      register: health_check
+      with_items: "{{ master_nodes }}"
+      ignore_errors: yes
+
+    - name: Display connectivity test results
+      debug:
+        msg:
+          - "Health check results:"
+          - "{% for result in health_check.results %}{{ master_nodes[loop.index0] }}: {{ result.stdout }}{% if not loop.last %}, {% endif %}{% endfor %}"
