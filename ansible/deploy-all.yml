@@ -1,0 +1,9 @@
+---
+# Complete RKE2 and Rancher deployment playbook
+# Execute in sequence: system setup -> RKE2 server -> K8s nodes -> Rancher -> verify
+
+- import_playbook: playbooks/01-system-setup.yml
+- import_playbook: playbooks/02-rke2-server.yml  
+- import_playbook: playbooks/03-k8s-nodes.yml
+- import_playbook: playbooks/04-rancher-install.yml
+- import_playbook: playbooks/05-cluster-verify.yml

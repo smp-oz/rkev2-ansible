@@ -1,0 +1,142 @@
+---
+- name: Install Rancher on Kubernetes Cluster
+  hosts: rke2_server
+  become: yes
+  gather_facts: yes
+  vars:
+    rancher_namespace: "cattle-system"
+    rancher_version: "v2.8.0"
+    cert_manager_version: "v1.13.0"
+    
+  tasks:
+    - name: Add Helm repository for cert-manager
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/helm repo add jetstack https://charts.jetstack.io
+        /var/lib/rancher/rke2/bin/helm repo update
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Create cert-manager namespace
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl create namespace cert-manager --dry-run=client -o yaml | /usr/local/bin/kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Install cert-manager
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/helm install cert-manager jetstack/cert-manager \
+          --namespace cert-manager \
+          --version {{ cert_manager_version }} \
+          --set installCRDs=true \
+          --wait
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Wait for cert-manager to be ready
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Add Helm repository for Rancher
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/helm repo add rancher-stable https://releases.rancher.com/server-charts/stable
+        /var/lib/rancher/rke2/bin/helm repo update
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Create Rancher namespace
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl create namespace {{ rancher_namespace }} --dry-run=client -o yaml | /usr/local/bin/kubectl apply -f -
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Install Rancher with Let's Encrypt
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/helm install rancher rancher-stable/rancher \
+          --namespace {{ rancher_namespace }} \
+          --set hostname={{ rancher_hostname }} \
+          --set ingress.tls.source=letsEncrypt \
+          --set letsEncrypt.email=admin@smartcorex.com \
+          --set letsEncrypt.environment=production \
+          --version={{ rancher_version }} \
+          --wait
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Wait for Rancher deployment to be ready
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl wait --for=condition=available deployment/rancher -n {{ rancher_namespace }} --timeout=600s
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Get Rancher service details
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl get svc -n {{ rancher_namespace }}
+      register: rancher_services
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Get Rancher pods status
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl get pods -n {{ rancher_namespace }}
+      register: rancher_pods
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Display Rancher installation status
+      debug:
+        msg:
+          - "Rancher installation completed successfully"
+          - "Rancher URL: https://{{ rancher_hostname }}"
+          - "Services:"
+          - "{{ rancher_services.stdout_lines }}"
+          - "Pods:"
+          - "{{ rancher_pods.stdout_lines }}"
+          - ""
+          - "Access Rancher at: https://{{ rancher_hostname }}"
+          - "Note: Configure ALB target group to point to Kubernetes masters"
+
+    - name: Create Rancher ingress for ALB (if needed)
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        cat <<EOF | /usr/local/bin/kubectl apply -f -
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: rancher-alb
+          namespace: {{ rancher_namespace }}
+          annotations:
+            kubernetes.io/ingress.class: "nginx"
+            cert-manager.io/cluster-issuer: "letsencrypt-prod"
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+        spec:
+          tls:
+          - hosts:
+            - {{ rancher_hostname }}
+            secretName: rancher-tls
+          rules:
+          - host: {{ rancher_hostname }}
+            http:
+              paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: rancher
+                    port:
+                      number: 443
+        EOF
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+      ignore_errors: yes

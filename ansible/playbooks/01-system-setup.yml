@@ -1,0 +1,87 @@
+---
+- name: System Setup and Preparation for RKE2
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  tasks:
+    - name: Update system packages
+      dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+      register: system_update
+
+    - name: Install essential packages
+      dnf:
+        name:
+          - curl
+          - wget
+          - tar
+          - unzip
+          - vim
+          - git
+          - iptables
+          - container-selinux
+          - selinux-policy-base
+        state: present
+
+    - name: Disable firewalld (RKE2 manages iptables)
+      systemd:
+        name: firewalld
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: Configure SELinux to permissive mode
+      selinux:
+        policy: targeted
+        state: permissive
+
+    - name: Load required kernel modules
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - overlay
+
+    - name: Configure kernel modules to load at boot
+      copy:
+        content: |
+          br_netfilter
+          overlay
+        dest: /etc/modules-load.d/rke2.conf
+        mode: '0644'
+
+    - name: Configure sysctl parameters for Kubernetes
+      copy:
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward                 = 1
+        dest: /etc/sysctl.d/99-kubernetes.conf
+        mode: '0644'
+
+    - name: Apply sysctl settings
+      command: sysctl --system
+
+    - name: Create RKE2 directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/rancher/rke2
+        - /var/lib/rancher/rke2
+        - /usr/local/bin
+
+    - name: Display system setup completion
+      debug:
+        msg:
+          - "System setup completed for {{ inventory_hostname }}"
+          - "Role: {{ 'RKE2-Server' if inventory_hostname in groups['rke2_server'] else ('K8s-Master' if inventory_hostname in groups['k8s_masters'] else 'K8s-Worker') }}"
+          - "Kernel modules loaded: br_netfilter, overlay"
+          - "SELinux: permissive"
+          - "Firewall: disabled"
+          - "Ready for RKE2 installation"
