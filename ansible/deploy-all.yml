@@ -1,9 +1,22 @@
 ---
-# Complete RKE2 and Rancher deployment playbook
-# Execute in sequence: system setup -> RKE2 server -> K8s nodes -> Rancher -> verify
+# RKE2 Kubernetes Cluster Deployment
+# Automated deployment of production-ready RKE2 cluster with dedicated server architecture
+# 
+# Architecture:
+# - 1 RKE2 Server (standalone management) - 10.122.10.221
+# - 3 Kubernetes Masters (control plane) - 10.122.10.46, 10.122.11.81, 10.122.12.28
+# - 3 Kubernetes Workers (data plane) - 10.122.10.83, 10.122.11.68, 10.122.12.203
+#
+# After completion, use RANCHER-MANUAL-SETUP.md for manual Rancher installation
 
-- import_playbook: playbooks/01-system-setup.yml
-- import_playbook: playbooks/02-rke2-server.yml  
-- import_playbook: playbooks/03-k8s-nodes.yml
-- import_playbook: playbooks/04-rancher-install.yml
-- import_playbook: playbooks/05-cluster-verify.yml
+- name: System Preparation
+  import_playbook: playbooks/01-system-setup.yml
+
+- name: RKE2 Server Installation
+  import_playbook: playbooks/02-rke2-server.yml
+
+- name: Kubernetes Nodes Setup
+  import_playbook: playbooks/03-k8s-nodes.yml
+
+- name: Cluster Verification
+  import_playbook: playbooks/05-cluster-verify.yml
