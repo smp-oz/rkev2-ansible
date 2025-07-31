@@ -57,7 +57,6 @@
           Type=notify
           EnvironmentFile=-/etc/default/rke2-server
           EnvironmentFile=-/etc/sysconfig/rke2-server
-          EnvironmentFile=-/usr/local/lib/systemd/system/rke2-server.env
           KillMode=process
           Delegate=yes
           LimitNOFILE=1048576
@@ -67,11 +66,10 @@
           TimeoutStartSec=0
           Restart=always
           RestartSec=5s
-          ExecStartPre=/bin/sh -xc '! /usr/bin/systemctl is-enabled --quiet nm-cloud-setup.service'
           ExecStartPre=-/sbin/modprobe br_netfilter
           ExecStartPre=-/sbin/modprobe overlay
           ExecStart=/usr/local/bin/rke2 server
-        dest: /usr/local/lib/systemd/system/rke2-server.service
+        dest: /etc/systemd/system/rke2-server.service
         mode: '0644'
       when: inventory_hostname in groups['k8s_masters']
 
@@ -109,7 +107,6 @@
           Type=notify
           EnvironmentFile=-/etc/default/rke2-agent
           EnvironmentFile=-/etc/sysconfig/rke2-agent
-          EnvironmentFile=-/usr/local/lib/systemd/system/rke2-agent.env
           KillMode=process
           Delegate=yes
           LimitNOFILE=1048576
@@ -122,7 +119,7 @@
           ExecStartPre=-/sbin/modprobe br_netfilter
           ExecStartPre=-/sbin/modprobe overlay
           ExecStart=/usr/local/bin/rke2 agent
-        dest: /usr/local/lib/systemd/system/rke2-agent.service
+        dest: /etc/systemd/system/rke2-agent.service
         mode: '0644'
       when: inventory_hostname in groups['k8s_workers']
 
