@@ -1,0 +1,70 @@
+---
+- name: Cleanup and Restart Rancher Installation
+  hosts: rke2_server
+  become: yes
+  gather_facts: yes
+  vars:
+    rancher_namespace: "cattle-system"
+    
+  tasks:
+    - name: Check current Helm releases
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/helm list --all-namespaces
+      register: helm_releases
+      ignore_errors: yes
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Display current Helm releases
+      debug:
+        msg: "{{ helm_releases.stdout_lines }}"
+
+    - name: Remove Rancher if exists
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/helm uninstall rancher -n {{ rancher_namespace }}
+      ignore_errors: yes
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Remove cert-manager if exists
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/helm uninstall cert-manager -n cert-manager
+      ignore_errors: yes
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Delete namespaces
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl delete namespace {{ rancher_namespace }} --ignore-not-found=true
+        /usr/local/bin/kubectl delete namespace cert-manager --ignore-not-found=true
+      ignore_errors: yes
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Wait for cleanup
+      pause:
+        seconds: 60
+
+    - name: Verify cluster is clean
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl get pods --all-namespaces | grep -E "(cert-manager|cattle-system)"
+      register: remaining_pods
+      ignore_errors: yes
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Display remaining pods
+      debug:
+        msg: "{{ remaining_pods.stdout_lines if remaining_pods.stdout_lines else ['No Rancher or cert-manager pods found - cleanup successful'] }}"
+
+    - name: Display cleanup completion
+      debug:
+        msg:
+          - "Cleanup completed successfully"
+          - "Ready to run: ansible-playbook playbooks/04-rancher-install.yml"
+          - "Cluster is clean and ready for fresh Rancher installation"
