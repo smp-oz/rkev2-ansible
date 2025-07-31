@@ -22,7 +22,7 @@ Production-ready RKE2 Kubernetes cluster deployment on AWS with dedicated RKE2 s
 ### Prerequisites
 1. AWS CLI configured with appropriate permissions
 2. Terraform >= 1.0 installed
-3. SSH key pair (SMP-ANSIBLE) available in AWS
+3. SSH key pair (SMP-ANSIBLE) available in AWS and locally at ~/.ssh/SMP-ANSIBLE.pem
 4. SSL certificate for rancher.smartcorex.com in ACM
 
 ### Step 1: Deploy Infrastructure
@@ -33,36 +33,62 @@ cp terraform.tfvars.example terraform.tfvars
 terraform init
 terraform plan
 terraform apply
+
+# Note the outputs - you'll need these IP addresses:
+# ansible_control_public_ip = "3.133.147.25"
+# rke2_server_private_ip = "10.122.10.221"  
+# master_private_ips = ["10.122.10.46", "10.122.11.81", "10.122.12.28"]
+# worker_private_ips = ["10.122.10.83", "10.122.11.68", "10.122.12.203"]
 ```
 
-### Step 2: Update Ansible Inventory
+### Step 2: Copy SSH Key and Files to Ansible Controller
 ```bash
-cd ansible
-# Copy private IP addresses from Terraform outputs to inventory/hosts.yml
-# Update the XXX placeholders with actual IP addresses:
-# - rke2_server_private_ip -> rke2-server ansible_host
-# - master_private_ips -> master-1, master-2, master-3 ansible_host  
-# - worker_private_ips -> worker-1, worker-2, worker-3 ansible_host
-# - rke2_server_private_ip -> rke2_server_ip variable
+# Copy your SSH private key to the Ansible controller
+scp -i ~/.ssh/SMP-ANSIBLE.pem ~/.ssh/SMP-ANSIBLE.pem ec2-user@3.133.147.25:~/.ssh/
+
+# Copy the entire ansible directory to the controller
+scp -i ~/.ssh/SMP-ANSIBLE.pem -r ansible/ ec2-user@3.133.147.25:~/
+
+# Alternatively, use rsync for better file synchronization
+rsync -avz -e "ssh -i ~/.ssh/SMP-ANSIBLE.pem" ansible/ ec2-user@3.133.147.25:~/ansible/
 ```
 
-### Step 3: Deploy RKE2 and Rancher
+### Step 3: Setup Ansible Controller
 ```bash
-cd ansible
-# SSH to Ansible controller (get IP from terraform output)
-ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@<ansible_control_public_ip>
+# SSH to Ansible controller
+ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@3.133.147.25
 
-# Install Ansible on the controller
+# Set correct permissions for SSH key
+chmod 600 ~/.ssh/SMP-ANSIBLE.pem
+
+# Install Ansible and dependencies
 sudo dnf update -y
-sudo dnf install -y ansible git
+sudo dnf install -y ansible git python3-pip
 
-# Clone your repository or copy files
-# Update inventory with actual IP addresses
+# Verify Ansible installation
+ansible --version
+```
+
+### Step 4: Deploy RKE2 and Rancher
+```bash
+# Navigate to ansible directory
+cd ~/ansible
+
+# Test connectivity to all nodes
+ansible all -m ping
+
 # Run complete deployment
 ansible-playbook deploy-all.yml
+
+# Or run individual stages if needed:
+# ansible-playbook playbooks/01-system-setup.yml
+# ansible-playbook playbooks/02-rke2-server.yml
+# ansible-playbook playbooks/03-k8s-nodes.yml
+# ansible-playbook playbooks/04-rancher-install.yml
+# ansible-playbook playbooks/05-cluster-verify.yml
 ```
 
-### Step 4: Configure Load Balancer
+### Step 5: Configure Load Balancer
 The ALB target group needs to point to the Kubernetes masters for Rancher access:
 - Target Group: rancher-tg
 - Protocol: HTTPS
@@ -70,7 +96,7 @@ The ALB target group needs to point to the Kubernetes masters for Rancher access
 - Health Check: /ping
 - Targets: All 3 Kubernetes master instances
 
-### Step 5: Access Rancher
+### Step 6: Access Rancher
 1. Navigate to https://rancher.smartcorex.com
 2. Complete initial Rancher setup
 3. Set admin password
