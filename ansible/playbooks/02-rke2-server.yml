@@ -89,6 +89,17 @@
         name: rke2-server
         state: started
         enabled: yes
+      register: rke2_start_result
+
+    - name: Check RKE2 server status immediately after start
+      shell: systemctl status rke2-server --no-pager -l
+      register: rke2_immediate_status
+      ignore_errors: yes
+
+    - name: Display immediate RKE2 status
+      debug:
+        msg: "{{ rke2_immediate_status.stdout_lines }}"
+      when: rke2_immediate_status.stdout_lines is defined
 
     - name: Wait for RKE2 server to be ready
       wait_for:
@@ -98,6 +109,11 @@
     - name: Wait for kubeconfig to be created
       wait_for:
         path: /etc/rancher/rke2/rke2.yaml
+        timeout: 300
+
+    - name: Wait for kubectl binary to be created
+      wait_for:
+        path: /var/lib/rancher/rke2/bin/kubectl
         timeout: 300
 
     - name: Create kubectl symlink
