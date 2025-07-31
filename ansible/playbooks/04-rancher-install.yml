@@ -31,7 +31,8 @@
           --namespace cert-manager \
           --version {{ cert_manager_version }} \
           --set installCRDs=true \
-          --wait
+          --wait \
+          --timeout=10m
       environment:
         KUBECONFIG: /etc/rancher/rke2/rke2.yaml
 
@@ -67,7 +68,8 @@
           --set letsEncrypt.email=admin@smartcorex.com \
           --set letsEncrypt.environment=production \
           --version={{ rancher_version }} \
-          --wait
+          --wait \
+          --timeout=15m
       environment:
         KUBECONFIG: /etc/rancher/rke2/rke2.yaml
 
