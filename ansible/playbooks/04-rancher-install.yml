@@ -17,12 +17,36 @@
       environment:
         KUBECONFIG: /etc/rancher/rke2/rke2.yaml
 
-    - name: Create cert-manager namespace
+    - name: Delete cert-manager namespace if exists
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /usr/local/bin/kubectl create namespace cert-manager --dry-run=client -o yaml | /usr/local/bin/kubectl apply -f -
+        /usr/local/bin/kubectl delete namespace cert-manager --ignore-not-found=true
       environment:
         KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+      ignore_errors: yes
+
+    - name: Check if cert-manager is already installed
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/helm list -n cert-manager | grep cert-manager
+      register: cert_manager_check
+      ignore_errors: yes
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Uninstall existing cert-manager if present
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/helm uninstall cert-manager -n cert-manager
+      when: cert_manager_check.rc == 0
+      ignore_errors: yes
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Wait for cert-manager cleanup
+      pause:
+        seconds: 30
+      when: cert_manager_check.rc == 0
 
     - name: Install cert-manager
       shell: |
@@ -32,7 +56,8 @@
           --version {{ cert_manager_version }} \
           --set installCRDs=true \
           --wait \
-          --timeout=10m
+          --timeout=10m \
+          --create-namespace
       environment:
         KUBECONFIG: /etc/rancher/rke2/rke2.yaml
 
