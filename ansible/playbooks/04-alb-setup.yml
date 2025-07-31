@@ -10,45 +10,103 @@
       - "10.122.12.28"
     
   tasks:
-    - name: Configure nginx-ingress for ALB
+    - name: Debug - Check all kube-system services and nginx resources
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /usr/local/bin/kubectl patch configmap rke2-ingress-nginx-controller -n kube-system --patch='
-        data:
-          use-forwarded-headers: "true"
-          compute-full-forwarded-for: "true"
-          proxy-real-ip-cidr: "10.122.0.0/16"
-          ssl-redirect: "true"
-          server-tokens: "false"
-        '
+        echo "=== ALL KUBE-SYSTEM SERVICES ==="
+        /usr/local/bin/kubectl get svc -n kube-system
+        echo ""
+        echo "=== NGINX SERVICES ==="
+        /usr/local/bin/kubectl get svc -n kube-system | grep -i nginx || echo "No nginx services found"
+        echo ""
+        echo "=== NGINX CONFIGMAPS ==="
+        /usr/local/bin/kubectl get configmap -n kube-system | grep -i nginx || echo "No nginx configmaps found"
+        echo ""
+        echo "=== NGINX PODS ==="
+        /usr/local/bin/kubectl get pods -n kube-system | grep -i nginx || echo "No nginx pods found"
+        echo ""
+        echo "=== ALL NODEPORT SERVICES ==="
+        /usr/local/bin/kubectl get svc --all-namespaces | grep NodePort || echo "No NodePort services found"
+      register: debug_output
       environment:
         KUBECONFIG: /etc/rancher/rke2/rke2.yaml
 
-    - name: Set nginx-ingress service to NodePort
+    - name: Display debug information
+      debug:
+        msg: "{{ debug_output.stdout_lines }}"
+
+    - name: Try to find and configure any nginx ingress service
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /usr/local/bin/kubectl patch svc rke2-ingress-nginx-controller -n kube-system -p '{"spec":{"type":"NodePort"}}'
+        
+        echo "=== SEARCHING FOR NGINX SERVICES ==="
+        # Find any nginx service in any namespace
+        nginx_svc=$(/usr/local/bin/kubectl get svc --all-namespaces | grep -i nginx | head -1)
+        
+        if [ -n "$nginx_svc" ]; then
+          namespace=$(echo "$nginx_svc" | awk '{print $1}')
+          service_name=$(echo "$nginx_svc" | awk '{print $2}')
+          echo "Found nginx service: $service_name in namespace: $namespace"
+          
+          # Try to patch the service to NodePort
+          /usr/local/bin/kubectl patch svc "$service_name" -n "$namespace" -p '{"spec":{"type":"NodePort"}}'
+          echo "nginx_service_name=$service_name" > /tmp/nginx_service
+          echo "nginx_namespace=$namespace" >> /tmp/nginx_service
+          
+          # Try to find and patch configmap
+          configmap=$(/usr/local/bin/kubectl get configmap -n "$namespace" | grep -i nginx | head -1 | awk '{print $1}')
+          if [ -n "$configmap" ]; then
+            echo "Found configmap: $configmap"
+            /usr/local/bin/kubectl patch configmap "$configmap" -n "$namespace" --patch='
+            data:
+              use-forwarded-headers: "true"
+              compute-full-forwarded-for: "true"
+              proxy-real-ip-cidr: "10.122.0.0/16"
+              ssl-redirect: "true"
+              server-tokens: "false"
+            '
+          fi
+        else
+          echo "No nginx services found - need to install nginx-ingress"
+          echo "nginx_service_name=none" > /tmp/nginx_service
+        fi
+      register: nginx_config_result
       environment:
         KUBECONFIG: /etc/rancher/rke2/rke2.yaml
 
-    - name: Get nginx-ingress NodePort
+    - name: Display nginx configuration result
+      debug:
+        msg: "{{ nginx_config_result.stdout_lines }}"
+
+    - name: Get nginx-ingress NodePort (if service exists)
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /usr/local/bin/kubectl get svc rke2-ingress-nginx-controller -n kube-system -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}'
+        
+        if [ -f /tmp/nginx_service ] && grep -q "nginx_service_name=none" /tmp/nginx_service; then
+          echo "No nginx service found - skipping NodePort retrieval"
+          echo "0"
+        else
+          svc_name=$(cat /tmp/nginx_service | grep nginx_service_name | cut -d'=' -f2)
+          namespace=$(cat /tmp/nginx_service | grep nginx_namespace | cut -d'=' -f2)
+          echo "Getting NodePort for service: $svc_name in namespace: $namespace"
+          /usr/local/bin/kubectl get svc "$svc_name" -n "$namespace" -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}' || echo "443"
+        fi
       register: nginx_nodeport
       environment:
         KUBECONFIG: /etc/rancher/rke2/rke2.yaml
 
-    - name: Display nginx-ingress configuration
+    - name: Display nginx-ingress configuration status
       debug:
         msg:
-          - "Nginx-ingress configured for ALB integration"
-          - "Service type: NodePort"
-          - "HTTPS NodePort: {{ nginx_nodeport.stdout }}"
-          - "Configure ALB Target Group with:"
-          - "  - Protocol: HTTPS"
-          - "  - Port: {{ nginx_nodeport.stdout }}"
-          - "  - Targets: {{ master_nodes | join(', ') }}"
+          - "=== NGINX-INGRESS ALB CONFIGURATION STATUS ==="
+          - "{% if nginx_nodeport.stdout == '0' %}❌ No nginx-ingress service found{% else %}✅ Nginx-ingress configured for ALB{% endif %}"
+          - "{% if nginx_nodeport.stdout != '0' %}Service type: NodePort{% endif %}"
+          - "{% if nginx_nodeport.stdout != '0' %}HTTPS NodePort: {{ nginx_nodeport.stdout }}{% endif %}"
+          - "{% if nginx_nodeport.stdout != '0' %}Configure ALB Target Group with:{% endif %}"
+          - "{% if nginx_nodeport.stdout != '0' %}  - Protocol: HTTPS{% endif %}"
+          - "{% if nginx_nodeport.stdout != '0' %}  - Port: {{ nginx_nodeport.stdout }}{% endif %}"
+          - "{% if nginx_nodeport.stdout != '0' %}  - Targets: {{ master_nodes | join(', ') }}{% endif %}"
+          - "{% if nginx_nodeport.stdout == '0' %}SOLUTION: Install nginx-ingress manually or use alternative ingress{% endif %}"
 
     - name: Create health check endpoint information
       debug:
@@ -80,15 +138,53 @@
           - "# Check target health"
           - "aws elbv2 describe-target-health --target-group-arn <ARN>"
 
-    - name: Test nginx-ingress connectivity from masters
+    - name: Install nginx-ingress if not found
       shell: |
-        curl -k -s -o /dev/null -w "%{http_code}" https://{{ item }}:{{ nginx_nodeport.stdout }}/healthz
-      register: health_check
-      with_items: "{{ master_nodes }}"
-      ignore_errors: yes
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        
+        if grep -q "nginx_service_name=none" /tmp/nginx_service; then
+          echo "Installing nginx-ingress via Helm..."
+          
+          # Add nginx-ingress helm repo
+          /usr/local/bin/helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          /usr/local/bin/helm repo update
+          
+          # Install nginx-ingress with NodePort
+          /usr/local/bin/helm install ingress-nginx ingress-nginx/ingress-nginx \
+            --namespace ingress-nginx \
+            --create-namespace \
+            --set controller.service.type=NodePort \
+            --set controller.service.nodePorts.https=30443 \
+            --set controller.config.use-forwarded-headers=true \
+            --set controller.config.compute-full-forwarded-for=true \
+            --set controller.config.proxy-real-ip-cidr="10.122.0.0/16" \
+            --wait --timeout=300s
+          
+          echo "Nginx-ingress installed successfully"
+          echo "NodePort: 30443"
+        else
+          echo "Nginx-ingress already exists, skipping installation"
+        fi
+      register: nginx_install_result
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
 
-    - name: Display connectivity test results
+    - name: Display nginx installation result
       debug:
-        msg:
-          - "Health check results:"
-          - "{% for result in health_check.results %}{{ master_nodes[loop.index0] }}: {{ result.stdout }}{% if not loop.last %}, {% endif %}{% endfor %}"
+        msg: "{{ nginx_install_result.stdout_lines }}"
+
+    - name: Final nginx service check
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        echo "=== FINAL NGINX SERVICE STATUS ==="
+        /usr/local/bin/kubectl get svc --all-namespaces | grep -i nginx || echo "No nginx services found"
+        echo ""
+        echo "=== NODEPORT SERVICES ==="
+        /usr/local/bin/kubectl get svc --all-namespaces | grep NodePort || echo "No NodePort services"
+      register: final_check
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+    - name: Display final service status
+      debug:
+        msg: "{{ final_check.stdout_lines }}"
