@@ -1,0 +1,276 @@
+# Rancher Manuel Kurulum Kılavuzu
+
+## Mevcut Cluster Durumu
+✅ **RKE2 Server**: 10.122.10.221 (çalışıyor)
+✅ **Kubernetes Masters**: 10.122.10.46, 10.122.11.81, 10.122.12.28 (hazır)
+✅ **Kubernetes Workers**: 10.122.10.83, 10.122.11.68, 10.122.12.203 (hazır)
+✅ **kubectl ve Helm**: Kurulu ve yapılandırılmış
+
+## Manuel Rancher Kurulumu
+
+### 1. Nginx-Ingress Controller Kurulumu (ALB için Gerekli!)
+```bash
+# RKE2 Server'a bağlanın
+ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@3.133.147.25
+ssh ec2-user@10.122.10.221
+sudo su -
+
+# Root kullanıcısı olarak kubectl yapılandır
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+
+# Nginx-ingress repository ekle
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+
+# Nginx-ingress'i farklı isimle kur (IngressClass çakışmasını önlemek için)
+helm install nginx-alb ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --create-namespace \
+  --set controller.ingressClassResource.name=nginx-alb \
+  --set controller.ingressClass=nginx-alb \
+  --set controller.service.type=NodePort \
+  --set controller.service.nodePorts.https=30443 \
+  --set controller.service.nodePorts.http=30080 \
+  --set controller.config.use-forwarded-headers=true \
+  --set controller.config.compute-full-forwarded-for=true \
+  --set controller.config.proxy-real-ip-cidr="10.122.0.0/16" \
+  --wait --timeout=300s
+
+# Nginx-ingress durumunu kontrol et
+kubectl get svc -n ingress-nginx
+kubectl get pods -n ingress-nginx
+
+# NodePort'u doğrula (ALB için 30443 olmalı)
+kubectl get svc nginx-alb-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}'
+```
+
+### 2. RKE2 Server'a Bağlanın
+```bash
+ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@3.133.147.25
+ssh ec2-user@10.122.10.221
+```
+
+### 2. Kubectl Yapılandırması
+```bash
+# Root kullanıcısı olarak
+sudo su -
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+
+# Cluster durumunu kontrol edin
+kubectl get nodes -o wide
+kubectl get pods --all-namespaces
+```
+
+### 3. Cert-manager Kurulumu
+```bash
+# Cert-manager namespace oluştur
+kubectl create namespace cert-manager
+
+# Helm repository ekle
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+# Cert-manager kur
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --version v1.13.0 \
+  --set installCRDs=true \
+  --wait \
+  --timeout=10m
+
+# Cert-manager durumunu kontrol et
+kubectl get pods -n cert-manager
+```
+
+### 4. Rancher Kurulumu
+```bash
+# Rancher namespace oluştur
+kubectl create namespace cattle-system
+
+# Rancher Helm repository ekle
+helm repo add rancher-stable https://releases.rancher.com/server-charts/stable
+helm repo update
+
+# ÖNEMLI: Webhook validation sorununu çöz
+kubectl delete validatingwebhookconfiguration nginx-alb-ingress-nginx-admission || true
+
+# Rancher'ı nginx-alb ingress class ile kur
+helm install rancher rancher-stable/rancher \
+  --namespace cattle-system \
+  --set hostname=rancher.smartcorex.com \
+  --set ingress.tls.source=secret \
+  --set privateCA=true \
+  --set ingress.ingressClassName=nginx-alb \
+  --version=2.9.3 \
+  --wait \
+  --timeout=15m
+
+# Kurulum sonrası Let's Encrypt'e geçiş için sertifika issuer'ı oluştur
+cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@smartcorex.com
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+EOF
+```
+
+### 5. Kurulum Durumunu Kontrol Edin
+```bash
+# Rancher pod'larını kontrol et
+kubectl get pods -n cattle-system
+
+# Rancher servislerini kontrol et
+kubectl get svc -n cattle-system
+
+# Ingress kontrolü
+kubectl get ingress -n cattle-system
+
+# Certificateleri kontrol et
+kubectl get certificates -n cattle-system
+```
+
+## ALB (Application Load Balancer) Yapılandırması
+
+### 1. Mevcut ALB Bilgileri
+- **ALB Name**: rancher-alb-1875712086.us-east-2.elb.amazonaws.com
+- **Target Group**: rancher-tg
+- **Listener**: HTTPS:443
+
+### 2. Target Group Yapılandırması (ÖNEMLI: Port 30443 Kullanın!)
+
+AWS Console'da Target Group ayarları:
+```
+Target Group Name: rancher-tg
+Protocol: HTTPS
+Port: 30443 (NodePort - nginx-ingress tarafından kullanılan)
+Health Check Path: /healthz
+Health Check Protocol: HTTP
+Health Check Port: 30080
+
+Targets (Kubernetes Masters):
+- 10.122.10.46:30443
+- 10.122.11.81:30443  
+- 10.122.12.28:30443
+```
+
+### 3. AWS CLI ile Target Group Güncelleme
+```bash
+# Target Group ARN'yi bulun
+aws elbv2 describe-target-groups --names rancher-tg
+
+# ÖNEMLI: Master node'ları NodePort 30443 ile target olarak ekleyin
+aws elbv2 register-targets \
+  --target-group-arn arn:aws:elasticloadbalancing:us-east-2:ACCOUNT:targetgroup/rancher-tg/ID \
+  --targets Id=10.122.10.46,Port=30443 Id=10.122.11.81,Port=30443 Id=10.122.12.28,Port=30443
+
+# Target durumunu kontrol edin
+aws elbv2 describe-target-health \
+  --target-group-arn arn:aws:elasticloadbalancing:us-east-2:ACCOUNT:targetgroup/rancher-tg/ID
+```
+
+## ALB ve nginx-ingress Troubleshooting
+
+### 1. NodePort Doğrulama
+```bash
+# nginx-alb controller service'in NodePort'unu kontrol et
+kubectl get svc nginx-alb-ingress-nginx-controller -n ingress-nginx
+
+# 30443 portunda HTTPS trafiği dinlediğini doğrula
+kubectl get svc nginx-alb-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}'
+
+# Master node'larda port erişimini test et
+ssh ec2-user@10.122.10.46 'sudo netstat -tlnp | grep :30443'
+```
+
+### 2. ALB Health Check Düzeltme
+```bash
+# ALB health check için nginx-ingress health endpoint'ini test et
+curl -k http://10.122.10.46:30080/healthz
+curl -k http://10.122.11.81:30080/healthz
+curl -k http://10.122.12.28:30080/healthz
+```
+
+## Rancher Erişimi ve İlk Kurulum
+
+### 1. DNS Doğrulama
+```bash
+# DNS çözümlemesini kontrol edin
+nslookup rancher.smartcorex.com
+dig rancher.smartcorex.com
+```
+
+### 2. İlk Erişim
+1. Tarayıcıda `https://rancher.smartcorex.com` adresine gidin
+2. İlk kurulum sihirbazını takip edin
+3. Admin parolası belirleyin
+4. Server URL'yi doğrulayın: `https://rancher.smartcorex.com`
+
+### 3. Bootstrap Parolası (Gerekirse)
+```bash
+# İlk kurulum parolasını alın
+kubectl get secret --namespace cattle-system bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}{{"\n"}}'
+```
+
+## Sorun Giderme
+
+### 1. Rancher Pod'ları Çalışmıyor
+```bash
+# Pod durumunu detaylı kontrol
+kubectl describe pods -n cattle-system
+
+# Log'ları kontrol et
+kubectl logs -n cattle-system -l app=rancher
+```
+
+### 2. SSL Sertifika Sorunları
+```bash
+# Certificate durumu
+kubectl get certificates -n cattle-system
+kubectl describe certificate rancher -n cattle-system
+
+# Cert-manager log'ları
+kubectl logs -n cert-manager -l app.kubernetes.io/name=cert-manager
+```
+
+### 3. ALB Health Check Sorunları
+```bash
+# Nginx ingress durumu
+kubectl get pods -n kube-system -l app.kubernetes.io/name=ingress-nginx
+
+# Master node'larda port kontrolü
+ssh ec2-user@10.122.10.46 'sudo netstat -tlnp | grep :443'
+```
+
+### 4. Network Connectivity
+```bash
+# Master node'lardan Rancher service'e erişim
+kubectl exec -it -n kube-system POD_NAME -- curl -k https://rancher.cattle-system.svc.cluster.local
+```
+
+## Başarı Kriterleri
+
+Rancher başarıyla kurulduğunda:
+- ✅ Tüm Rancher pod'ları Running durumunda
+- ✅ SSL sertifikası Let's Encrypt tarafından otomatik oluşturuldu
+- ✅ https://rancher.smartcorex.com erişilebilir
+- ✅ ALB health check'leri başarılı
+- ✅ Rancher UI'da mevcut cluster görünür
+
+## Kubernetes Cluster İçindeki Rancher Avantajları
+
+Bu kurulum yöntemiyle:
+- **Yüksek Erişilebilirlik**: 3 master node arasında load balancing
+- **Otomatik SSL**: Let's Encrypt ile otomatik sertifika yenileme
+- **Cloud Native**: Kubernetes-native ingress ve service mesh
+- **Scalability**: Worker node'lar eklendiğinde otomatik discovery
+- **Backup**: Rancher config'i cluster backup'larına dahil
