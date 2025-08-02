@@ -1,164 +1,20 @@
 ---
-- name: Install RKE2 on Kubernetes Masters and Workers
-  hosts: k8s_masters,k8s_workers
-  become: yes
-  gather_facts: yes
-  vars:
-    rke2_version: "{{ hostvars['localhost']['rke2_version'] | default('v1.28.5+rke2r1') }}"
-    rke2_server_url: "https://{{ rke2_server_ip }}:9345"
-    
+# This playbook is now deprecated - RKE2 installation is handled by 02-rke2-cluster.yml
+# This file is kept for backwards compatibility
+
+- name: Deprecated - RKE2 installation moved to 02-rke2-cluster.yml
+  hosts: localhost
+  gather_facts: no
   tasks:
-    - name: Get cluster token from RKE2 server
-      slurp:
-        src: /var/lib/rancher/rke2/server/node-token
-      register: cluster_token_content
-      delegate_to: "{{ groups['rke2_server'][0] }}"
-      run_once: true
-
-    - name: Set cluster token fact
-      set_fact:
-        cluster_token: "{{ cluster_token_content.content | b64decode | trim }}"
-
-    - name: Download RKE2 binary directly from GitHub
-      get_url:
-        url: "https://github.com/rancher/rke2/releases/download/{{ rke2_version }}/rke2.linux-amd64.tar.gz"
-        dest: /tmp/rke2.tar.gz
-        mode: '0644'
-        timeout: 300
-
-    - name: Extract RKE2 binary
-      unarchive:
-        src: /tmp/rke2.tar.gz
-        dest: /usr/local
-        remote_src: yes
-        owner: root
-        group: root
-
-    - name: Set executable permissions on RKE2 binary
-      file:
-        path: /usr/local/bin/rke2
-        mode: '0755'
-
-    # Master-specific configuration
-    - name: Create RKE2 server systemd service (Masters)
-      copy:
-        content: |
-          [Unit]
-          Description=Rancher Kubernetes Engine v2 (server)
-          Documentation=https://rancher.com/docs/rke2/latest/en/
-          Wants=network-online.target
-          After=network-online.target
-          Conflicts=rke2-agent.service
-
-          [Install]
-          WantedBy=multi-user.target
-
-          [Service]
-          Type=notify
-          EnvironmentFile=-/etc/default/rke2-server
-          EnvironmentFile=-/etc/sysconfig/rke2-server
-          KillMode=process
-          Delegate=yes
-          LimitNOFILE=1048576
-          LimitNPROC=infinity
-          LimitCORE=infinity
-          TasksMax=infinity
-          TimeoutStartSec=0
-          Restart=always
-          RestartSec=5s
-          ExecStartPre=-/sbin/modprobe br_netfilter
-          ExecStartPre=-/sbin/modprobe overlay
-          ExecStart=/usr/local/bin/rke2 server
-        dest: /etc/systemd/system/rke2-server.service
-        mode: '0644'
-      when: inventory_hostname in groups['k8s_masters']
-
-    - name: Create RKE2 server configuration (Masters)
-      copy:
-        content: |
-          write-kubeconfig-mode: "0644"
-          server: {{ rke2_server_url }}
-          token: {{ cluster_token }}
-          cluster-cidr: "{{ cluster_cidr }}"
-          service-cidr: "{{ service_cidr }}"
-          tls-san:
-            - "{{ ansible_default_ipv4.address }}"
-            - "{{ rancher_hostname }}"
-          node-name: "{{ inventory_hostname }}"
-        dest: /etc/rancher/rke2/config.yaml
-        mode: '0600'
-      when: inventory_hostname in groups['k8s_masters']
-
-    # Worker-specific configuration
-    - name: Create RKE2 agent systemd service (Workers)
-      copy:
-        content: |
-          [Unit]
-          Description=Rancher Kubernetes Engine v2 (agent)
-          Documentation=https://rancher.com/docs/rke2/latest/en/
-          Wants=network-online.target
-          After=network-online.target
-          Conflicts=rke2-server.service
-
-          [Install]
-          WantedBy=multi-user.target
-
-          [Service]
-          Type=notify
-          EnvironmentFile=-/etc/default/rke2-agent
-          EnvironmentFile=-/etc/sysconfig/rke2-agent
-          KillMode=process
-          Delegate=yes
-          LimitNOFILE=1048576
-          LimitNPROC=infinity
-          LimitCORE=infinity
-          TasksMax=infinity
-          TimeoutStartSec=0
-          Restart=always
-          RestartSec=5s
-          ExecStartPre=-/sbin/modprobe br_netfilter
-          ExecStartPre=-/sbin/modprobe overlay
-          ExecStart=/usr/local/bin/rke2 agent
-        dest: /etc/systemd/system/rke2-agent.service
-        mode: '0644'
-      when: inventory_hostname in groups['k8s_workers']
-
-    - name: Create RKE2 agent configuration (Workers)
-      copy:
-        content: |
-          server: {{ rke2_server_url }}
-          token: {{ cluster_token }}
-          node-name: "{{ inventory_hostname }}"
-        dest: /etc/rancher/rke2/config.yaml
-        mode: '0600'
-      when: inventory_hostname in groups['k8s_workers']
-
-    - name: Reload systemd daemon
-      systemd:
-        daemon_reload: yes
-
-    - name: Start and enable RKE2 server (Masters)
-      systemd:
-        name: rke2-server
-        state: started
-        enabled: yes
-      when: inventory_hostname in groups['k8s_masters']
-
-    - name: Start and enable RKE2 agent (Workers)
-      systemd:
-        name: rke2-agent
-        state: started
-        enabled: yes
-      when: inventory_hostname in groups['k8s_workers']
-
-    - name: Wait for nodes to join cluster
-      pause:
-        seconds: 30
-
-    - name: Display node setup completion
+    - name: Warning about deprecated playbook
       debug:
-        msg:
-          - "Node setup completed: {{ inventory_hostname }}"
-          - "Type: {{ 'Kubernetes Master' if inventory_hostname in groups['k8s_masters'] else 'Kubernetes Worker' }}"
-          - "Connected to RKE2 server: {{ rke2_server_ip }}"
-          - "Service: {{ 'rke2-server' if inventory_hostname in groups['k8s_masters'] else 'rke2-agent' }}"
+        msg: |
+          WARNING: This playbook (03-k8s-nodes.yml) is deprecated.
+          RKE2 installation for both masters and workers is now handled by:
+          02-rke2-cluster.yml
+          
+          Please use the new unified RKE2 cluster playbook instead.
+          
+          Old approach: Separate RKE2 server + masters joining as servers + workers as agents
+          New approach: First master initializes cluster + other masters join as servers + workers as agents
+
