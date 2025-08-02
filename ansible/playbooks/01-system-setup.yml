@@ -5,13 +5,27 @@
   gather_facts: yes
   
   tasks:
-    - name: Update system packages
+    - name: Remove any existing problematic RKE2 repositories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/yum.repos.d/rancher-rke2-1.28-stable.repo
+        - /etc/yum.repos.d/rancher-rke2-stable.repo
+      ignore_errors: yes
+
+    - name: Clean package cache before update
+      shell: yum clean all
+      
+    - name: Update system packages (skip broken repos)
       yum:
         name: "*"
         state: latest
         update_cache: yes
         disable_gpg_check: yes
+        skip_broken: yes
       register: system_update
+      ignore_errors: yes
 
     - name: Install essential packages
       yum:
