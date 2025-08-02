@@ -1,22 +1,22 @@
 ---
 # RKE2 Kubernetes Cluster Deployment
-# Automated deployment of production-ready RKE2 cluster with dedicated server architecture
+# Automated deployment of production-ready RKE2 cluster with unified master architecture
 # 
-# Architecture:
-# - 1 RKE2 Server (standalone management) - 10.122.10.221
-# - 3 Kubernetes Masters (control plane) - 10.122.10.46, 10.122.11.81, 10.122.12.28
+# New Architecture (Updated January 31, 2025):
+# - 3 Kubernetes Masters with RKE2 (control plane) - 10.122.10.46, 10.122.11.81, 10.122.12.28
 # - 3 Kubernetes Workers (data plane) - 10.122.10.83, 10.122.11.68, 10.122.12.203
+# - First master (10.122.10.46) initializes the cluster, others join as additional servers
 #
 # After completion, use RANCHER-MANUAL-SETUP.md for manual Rancher installation
 
 - name: System Preparation
   import_playbook: playbooks/01-system-setup.yml
 
-- name: RKE2 Server Installation
-  import_playbook: playbooks/02-rke2-server.yml
+- name: RKE2 Cluster Installation (Masters and Workers)
+  import_playbook: playbooks/02-rke2-cluster.yml
 
-- name: Kubernetes Nodes Setup
-  import_playbook: playbooks/03-k8s-nodes.yml
+- name: ALB and Ingress Setup
+  import_playbook: playbooks/04-alb-setup.yml
 
 - name: Cluster Verification
   import_playbook: playbooks/05-cluster-verify.yml
