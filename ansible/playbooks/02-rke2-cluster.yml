@@ -16,11 +16,15 @@
         state: directory
         mode: '0755'
 
+    - name: Generate static cluster token
+      set_fact:
+        static_cluster_token: "{{ 'rke2-token-' + ansible_date_time.epoch + '-' + inventory_hostname }}"
+
     - name: Create RKE2 server config for first master
       copy:
         dest: /etc/rancher/rke2/config.yaml
         content: |
-          token: {{ ansible_date_time.epoch }}{{ inventory_hostname }}rke2token
+          token: {{ static_cluster_token }}
           cluster-cidr: {{ cluster_cidr }}
           service-cidr: {{ service_cidr }}
           tls-san:
@@ -29,6 +33,12 @@
           disable:
             - rke2-ingress-nginx
         mode: '0644'
+
+    - name: Store static token for sharing (backup method)
+      copy:
+        content: "{{ static_cluster_token }}"
+        dest: /tmp/cluster_token_static
+        mode: '0600'
 
     - name: Download RKE2 installation script
       get_url:
@@ -111,15 +121,29 @@
         state: directory
         mode: '0755'
 
-    - name: Get cluster token from primary master
+    - name: Try to get cluster token from node-token file
       slurp:
-        src: /tmp/cluster_token
+        src: /var/lib/rancher/rke2/server/node-token
       register: cluster_token_file
       delegate_to: "{{ groups['k8s_masters'][0] }}"
+      ignore_errors: yes
 
-    - name: Set cluster token variable
+    - name: Fallback to static token if node-token not available
+      slurp:
+        src: /tmp/cluster_token_static
+      register: static_token_file
+      delegate_to: "{{ groups['k8s_masters'][0] }}"
+      when: cluster_token_file.failed | default(false)
+
+    - name: Set cluster token variable (from node-token)
       set_fact:
         cluster_token: "{{ cluster_token_file.content | b64decode | trim }}"
+      when: not (cluster_token_file.failed | default(false))
+
+    - name: Set cluster token variable (from static token)
+      set_fact:
+        cluster_token: "{{ static_token_file.content | b64decode | trim }}"
+      when: cluster_token_file.failed | default(false)
 
     - name: Create RKE2 server config for additional masters
       copy:
@@ -188,15 +212,29 @@
         state: directory
         mode: '0755'
 
-    - name: Get cluster token from primary master
+    - name: Try to get cluster token from node-token file
       slurp:
-        src: /tmp/cluster_token
+        src: /var/lib/rancher/rke2/server/node-token
       register: cluster_token_file
       delegate_to: "{{ groups['k8s_masters'][0] }}"
+      ignore_errors: yes
 
-    - name: Set cluster token variable
+    - name: Fallback to static token if node-token not available
+      slurp:
+        src: /tmp/cluster_token_static
+      register: static_token_file
+      delegate_to: "{{ groups['k8s_masters'][0] }}"
+      when: cluster_token_file.failed | default(false)
+
+    - name: Set cluster token variable (from node-token)
       set_fact:
         cluster_token: "{{ cluster_token_file.content | b64decode | trim }}"
+      when: not (cluster_token_file.failed | default(false))
+
+    - name: Set cluster token variable (from static token)
+      set_fact:
+        cluster_token: "{{ static_token_file.content | b64decode | trim }}"
+      when: cluster_token_file.failed | default(false)
 
     - name: Create RKE2 agent config
       copy:
