@@ -1,6 +1,6 @@
 ---
 - name: Verify Complete RKE2 Cluster and Rancher Installation
-  hosts: rke2_server
+  hosts: k8s_masters[0]
   become: yes
   gather_facts: no
   
