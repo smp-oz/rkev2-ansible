@@ -1,6 +1,6 @@
 ---
 - name: Setup ALB Target Group for Rancher Access
-  hosts: rke2_server
+  hosts: k8s_masters[0]
   become: yes
   gather_facts: yes
   vars:
