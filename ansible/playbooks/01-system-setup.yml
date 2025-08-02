@@ -86,7 +86,8 @@
       debug:
         msg:
           - "System setup completed for {{ inventory_hostname }}"
-          - "Role: {{ 'RKE2-Server' if inventory_hostname in groups['rke2_server'] else ('K8s-Master' if inventory_hostname in groups['k8s_masters'] else 'K8s-Worker') }}"
+          - "Role: {{ 'RKE2-Master' if inventory_hostname in groups['k8s_masters'] else 'RKE2-Worker' }}"
+          - "Node Type: {{ 'Primary Master (Initializer)' if (inventory_hostname in groups['k8s_masters'] and rke2_server_init | default(false)) else ('Additional Master' if inventory_hostname in groups['k8s_masters'] else 'Worker Node') }}"
           - "Kernel modules loaded: br_netfilter, overlay"
           - "SELinux: permissive"
           - "Firewall: disabled"
