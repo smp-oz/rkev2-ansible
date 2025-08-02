@@ -12,34 +12,29 @@
       loop:
         - /etc/yum.repos.d/rancher-rke2-1.28-stable.repo
         - /etc/yum.repos.d/rancher-rke2-stable.repo
+        - /etc/yum.repos.d/rancher-rke2.repo
       ignore_errors: yes
 
-    - name: Clean package cache before update
-      shell: yum clean all
+    - name: Clean package cache and metadata
+      shell: |
+        yum clean all
+        rm -rf /var/cache/yum/*
+        yum makecache fast || true
+      ignore_errors: yes
       
-    - name: Update system packages (skip broken repos)
-      yum:
-        name: "*"
-        state: latest
-        update_cache: yes
-        disable_gpg_check: yes
-        skip_broken: yes
+    - name: Update system packages (force skip problematic repos)
+      shell: |
+        yum update -y --skip-broken --disablerepo=rancher-* || true
       register: system_update
       ignore_errors: yes
 
-    - name: Install essential packages
-      yum:
-        name:
-          - curl
-          - wget
-          - tar
-          - unzip
-          - vim
-          - git
-          - iptables
-          - container-selinux
-          - selinux-policy-base
-        state: present
+    - name: Install essential packages (skip broken repos)
+      shell: |
+        yum install -y --skip-broken --disablerepo=rancher-* \
+          curl wget tar unzip vim git iptables \
+          container-selinux selinux-policy-base || true
+      register: package_install
+      ignore_errors: yes
 
     - name: Check if firewalld exists
       stat:
