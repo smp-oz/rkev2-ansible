@@ -17,7 +17,7 @@
         mode: '0755'
 
     - name: Create RKE2 server config for first master
-      template:
+      copy:
         dest: /etc/rancher/rke2/config.yaml
         content: |
           token: {{ ansible_date_time.epoch }}{{ inventory_hostname }}rke2token
@@ -99,7 +99,7 @@
         mode: '0755'
 
     - name: Create RKE2 server config for additional masters
-      template:
+      copy:
         dest: /etc/rancher/rke2/config.yaml
         content: |
           server: https://{{ hostvars[groups['k8s_masters'][0]]['ansible_default_ipv4']['address'] }}:9345
@@ -166,7 +166,7 @@
         mode: '0755'
 
     - name: Create RKE2 agent config
-      template:
+      copy:
         dest: /etc/rancher/rke2/config.yaml
         content: |
           server: https://{{ hostvars[groups['k8s_masters'][0]]['ansible_default_ipv4']['address'] }}:9345
