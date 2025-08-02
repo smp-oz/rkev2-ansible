@@ -98,6 +98,7 @@
   serial: 1
   vars:
     rke2_type: server
+    cluster_token: "{{ hostvars[groups['k8s_masters'][0]]['cluster_token'] }}"
   tasks:
     - name: Create RKE2 config directory
       file:
@@ -165,6 +166,7 @@
   become: yes
   vars:
     rke2_type: agent
+    cluster_token: "{{ hostvars[groups['k8s_masters'][0]]['cluster_token'] }}"
   tasks:
     - name: Create RKE2 config directory
       file:
