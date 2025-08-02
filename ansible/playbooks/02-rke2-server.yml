@@ -1,0 +1,189 @@
+---
+- name: Install and Configure RKE2 Server (Standalone Management)
+  hosts: rke2_server
+  become: yes
+  gather_facts: yes
+  vars:
+    rke2_version: "{{ hostvars['localhost']['rke2_version'] | default('v1.28.5+rke2r1') }}"
+    
+  tasks:
+    - name: Download RKE2 binary directly from GitHub
+      get_url:
+        url: "https://github.com/rancher/rke2/releases/download/{{ rke2_version }}/rke2.linux-amd64.tar.gz"
+        dest: /tmp/rke2.tar.gz
+        mode: '0644'
+        timeout: 300
+
+    - name: Extract RKE2 binary
+      unarchive:
+        src: /tmp/rke2.tar.gz
+        dest: /usr/local
+        remote_src: yes
+        owner: root
+        group: root
+
+    - name: Set executable permissions on RKE2 binary
+      file:
+        path: /usr/local/bin/rke2
+        mode: '0755'
+
+    - name: Create systemd directory
+      file:
+        path: /etc/systemd/system
+        state: directory
+        mode: '0755'
+
+    - name: Create RKE2 server systemd service
+      copy:
+        content: |
+          [Unit]
+          Description=Rancher Kubernetes Engine v2 (server)
+          Documentation=https://rancher.com/docs/rke2/latest/en/
+          Wants=network-online.target
+          After=network-online.target
+          Conflicts=rke2-agent.service
+
+          [Install]
+          WantedBy=multi-user.target
+
+          [Service]
+          Type=notify
+          EnvironmentFile=-/etc/default/rke2-server
+          EnvironmentFile=-/etc/sysconfig/rke2-server
+          KillMode=process
+          Delegate=yes
+          LimitNOFILE=1048576
+          LimitNPROC=infinity
+          LimitCORE=infinity
+          TasksMax=infinity
+          TimeoutStartSec=0
+          Restart=always
+          RestartSec=5s
+          ExecStartPre=-/sbin/modprobe br_netfilter
+          ExecStartPre=-/sbin/modprobe overlay
+          ExecStart=/usr/local/bin/rke2 server
+        dest: /etc/systemd/system/rke2-server.service
+        mode: '0644'
+
+    - name: Create RKE2 server configuration
+      copy:
+        content: |
+          write-kubeconfig-mode: "0644"
+          cluster-cidr: "{{ cluster_cidr }}"
+          service-cidr: "{{ service_cidr }}"
+          tls-san:
+            - "{{ ansible_default_ipv4.address }}"
+            - "{{ rancher_hostname }}"
+            - "localhost"
+            - "127.0.0.1"
+          node-name: "{{ inventory_hostname }}"
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0600'
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Start and enable RKE2 server
+      systemd:
+        name: rke2-server
+        state: started
+        enabled: yes
+      register: rke2_start_result
+
+    - name: Check RKE2 server status immediately after start
+      shell: systemctl status rke2-server --no-pager -l
+      register: rke2_immediate_status
+      ignore_errors: yes
+
+    - name: Display immediate RKE2 status
+      debug:
+        msg: "{{ rke2_immediate_status.stdout_lines }}"
+      when: rke2_immediate_status.stdout_lines is defined
+
+    - name: Wait for RKE2 server to be ready
+      wait_for:
+        path: /var/lib/rancher/rke2/server/node-token
+        timeout: 300
+
+    - name: Wait for kubeconfig to be created
+      wait_for:
+        path: /etc/rancher/rke2/rke2.yaml
+        timeout: 300
+
+    - name: Wait for kubectl binary to be created
+      wait_for:
+        path: /var/lib/rancher/rke2/bin/kubectl
+        timeout: 300
+
+    - name: Create kubectl symlink
+      file:
+        src: /var/lib/rancher/rke2/bin/kubectl
+        dest: /usr/local/bin/kubectl
+        state: link
+
+    - name: Create .kube directory for root
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: Copy kubeconfig for root user
+      copy:
+        src: /etc/rancher/rke2/rke2.yaml
+        dest: /root/.kube/config
+        remote_src: yes
+        mode: '0600'
+
+    - name: Download and install Helm
+      get_url:
+        url: "https://get.helm.sh/helm-v3.12.0-linux-amd64.tar.gz"
+        dest: /tmp/helm.tar.gz
+        mode: '0644'
+
+    - name: Extract Helm binary
+      unarchive:
+        src: /tmp/helm.tar.gz
+        dest: /tmp
+        remote_src: yes
+
+    - name: Install Helm binary
+      copy:
+        src: /tmp/linux-amd64/helm
+        dest: /var/lib/rancher/rke2/bin/helm
+        mode: '0755'
+        remote_src: yes
+
+    - name: Create Helm symlink
+      file:
+        src: /var/lib/rancher/rke2/bin/helm
+        dest: /usr/local/bin/helm
+        state: link
+
+    - name: Get cluster token
+      slurp:
+        src: /var/lib/rancher/rke2/server/node-token
+      register: cluster_token
+
+    - name: Display RKE2 server setup completion
+      debug:
+        msg:
+          - "RKE2 Server installation completed successfully"
+          - "Server IP: {{ ansible_default_ipv4.address }}"
+          - "Cluster token available for Kubernetes nodes"
+          - "kubectl available at /usr/local/bin/kubectl"
+          - "Helm available at /usr/local/bin/helm"
+          - "Kubeconfig: /etc/rancher/rke2/rke2.yaml"
+
+    - name: Verify cluster is ready
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /usr/local/bin/kubectl get nodes
+      register: cluster_status
+      ignore_errors: yes
+
+    - name: Display initial cluster status
+      debug:
+        msg:
+          - "Initial cluster status:"
+          - "{{ cluster_status.stdout_lines | default(['Cluster not ready yet']) }}"
