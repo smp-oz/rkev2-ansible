@@ -91,6 +91,12 @@
         cluster_token: "{{ node_token.content | b64decode | trim }}"
       loop: "{{ groups['k8s_masters'] + groups['k8s_workers'] }}"
       delegate_to: localhost
+      
+    - name: Store token in temporary file for sharing
+      copy:
+        content: "{{ node_token.content | b64decode | trim }}"
+        dest: /tmp/cluster_token
+        mode: '0600'
 
 - name: Install RKE2 on remaining master nodes
   hosts: k8s_masters[1:]
@@ -98,13 +104,22 @@
   serial: 1
   vars:
     rke2_type: server
-    cluster_token: "{{ hostvars[groups['k8s_masters'][0]]['cluster_token'] }}"
   tasks:
     - name: Create RKE2 config directory
       file:
         path: /etc/rancher/rke2
         state: directory
         mode: '0755'
+
+    - name: Get cluster token from primary master
+      slurp:
+        src: /tmp/cluster_token
+      register: cluster_token_file
+      delegate_to: "{{ groups['k8s_masters'][0] }}"
+
+    - name: Set cluster token variable
+      set_fact:
+        cluster_token: "{{ cluster_token_file.content | b64decode | trim }}"
 
     - name: Create RKE2 server config for additional masters
       copy:
@@ -166,13 +181,22 @@
   become: yes
   vars:
     rke2_type: agent
-    cluster_token: "{{ hostvars[groups['k8s_masters'][0]]['cluster_token'] }}"
   tasks:
     - name: Create RKE2 config directory
       file:
         path: /etc/rancher/rke2
         state: directory
         mode: '0755'
+
+    - name: Get cluster token from primary master
+      slurp:
+        src: /tmp/cluster_token
+      register: cluster_token_file
+      delegate_to: "{{ groups['k8s_masters'][0] }}"
+
+    - name: Set cluster token variable
+      set_fact:
+        cluster_token: "{{ cluster_token_file.content | b64decode | trim }}"
 
     - name: Create RKE2 agent config
       copy:
