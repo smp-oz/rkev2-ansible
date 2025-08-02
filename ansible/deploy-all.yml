@@ -3,9 +3,9 @@
 # Automated deployment of production-ready RKE2 cluster with unified master architecture
 # 
 # New Architecture (Updated January 31, 2025):
-# - 3 Kubernetes Masters with RKE2 (control plane) - 10.122.10.46, 10.122.11.81, 10.122.12.28
-# - 3 Kubernetes Workers (data plane) - 10.122.10.83, 10.122.11.68, 10.122.12.203
-# - First master (10.122.10.46) initializes the cluster, others join as additional servers
+# - 3 Kubernetes Masters with RKE2 (control plane) - 10.122.10.76, 10.122.11.172, 10.122.12.175
+# - 3 Kubernetes Workers (data plane) - 10.122.10.159, 10.122.11.249, 10.122.12.215
+# - First master (10.122.10.76) initializes the cluster, others join as additional servers
 #
 # After completion, use RANCHER-MANUAL-SETUP.md for manual Rancher installation
 
