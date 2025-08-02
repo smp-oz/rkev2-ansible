@@ -81,9 +81,16 @@
         src: /var/lib/rancher/rke2/server/node-token
       register: node_token
 
-    - name: Set cluster token fact
+    - name: Set cluster token fact globally
       set_fact:
         cluster_token: "{{ node_token.content | b64decode | trim }}"
+        
+    - name: Add cluster token to hostvars for all hosts
+      add_host:
+        name: "{{ item }}"
+        cluster_token: "{{ node_token.content | b64decode | trim }}"
+      loop: "{{ groups['k8s_masters'] + groups['k8s_workers'] }}"
+      delegate_to: localhost
 
 - name: Install RKE2 on remaining master nodes
   hosts: k8s_masters[1:]
@@ -103,7 +110,7 @@
         dest: /etc/rancher/rke2/config.yaml
         content: |
           server: https://{{ hostvars[groups['k8s_masters'][0]]['ansible_default_ipv4']['address'] }}:9345
-          token: {{ hostvars[groups['k8s_masters'][0]]['cluster_token'] }}
+          token: {{ cluster_token }}
           cluster-cidr: {{ cluster_cidr }}
           service-cidr: {{ service_cidr }}
           tls-san:
@@ -170,7 +177,7 @@
         dest: /etc/rancher/rke2/config.yaml
         content: |
           server: https://{{ hostvars[groups['k8s_masters'][0]]['ansible_default_ipv4']['address'] }}:9345
-          token: {{ hostvars[groups['k8s_masters'][0]]['cluster_token'] }}
+          token: {{ cluster_token }}
         mode: '0644'
 
     - name: Download RKE2 installation script
