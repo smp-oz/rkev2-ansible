@@ -12,8 +12,8 @@
 - name: System Preparation
   import_playbook: playbooks/01-system-setup.yml
 
-- name: RKE2 Cluster Installation (Masters and Workers)
-  import_playbook: playbooks/02-rke2-cluster.yml
+- name: RKE2 Cluster Installation (Unified Single Playbook)
+  import_playbook: playbooks/02-rke2-unified.yml
 
 - name: ALB and Ingress Setup
   import_playbook: playbooks/04-alb-setup.yml
