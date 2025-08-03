@@ -1,0 +1,332 @@
+---
+# Unified RKE2 Cluster Installation - Single Playbook
+# Manual binary installation for RKE2 v1.28.15+rke2r1
+
+- name: Deploy RKE2 Cluster (All Nodes)
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    rke2_download_version: "v1.28.15%2Brke2r1"
+    cluster_token: ""
+  
+  tasks:
+    # Common preparation for all nodes
+    - name: Create RKE2 config directory
+      file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: '0755'
+
+    - name: Download and extract RKE2 binary
+      shell: |
+        cd /tmp
+        curl -LO https://github.com/rancher/rke2/releases/download/{{ rke2_download_version }}/rke2.linux-amd64.tar.gz
+        tar -xzf rke2.linux-amd64.tar.gz
+        cp rke2*/rke2 /usr/local/bin/
+        chmod +x /usr/local/bin/rke2
+      args:
+        creates: /usr/local/bin/rke2
+
+    # Primary master initialization
+    - name: Generate and configure primary master
+      block:
+        - name: Generate static cluster token
+          set_fact:
+            static_cluster_token: "{{ 'rke2-token-' + ansible_date_time.epoch + '-' + inventory_hostname }}"
+
+        - name: Create RKE2 server config for primary master
+          copy:
+            dest: /etc/rancher/rke2/config.yaml
+            content: |
+              token: {{ static_cluster_token }}
+              cluster-cidr: {{ cluster_cidr }}
+              service-cidr: {{ service_cidr }}
+              tls-san:
+                - {{ ansible_default_ipv4.address }}
+                - {{ rancher_hostname }}
+              disable:
+                - rke2-ingress-nginx
+            mode: '0644'
+
+        - name: Store token for other nodes
+          copy:
+            content: "{{ static_cluster_token }}"
+            dest: /tmp/cluster_token_static
+            mode: '0600'
+
+        - name: Create RKE2 server systemd service
+          copy:
+            dest: /etc/systemd/system/rke2-server.service
+            content: |
+              [Unit]
+              Description=Rancher Kubernetes Engine v2 (server)
+              Documentation=https://rancher.com/docs/rke2
+              Wants=network-online.target
+              After=network-online.target
+              Conflicts=rke2-agent.service
+
+              [Service]
+              Type=notify
+              EnvironmentFile=-/etc/default/rke2-server
+              EnvironmentFile=-/etc/sysconfig/rke2-server
+              EnvironmentFile=-/usr/local/lib/systemd/system/rke2-server.env
+              KillMode=process
+              Delegate=yes
+              LimitNOFILE=1048576
+              LimitNPROC=infinity
+              LimitCORE=infinity
+              TasksMax=infinity
+              TimeoutStartSec=0
+              Restart=always
+              RestartSec=5s
+              ExecStartPre=-/sbin/modprobe br_netfilter
+              ExecStartPre=-/sbin/modprobe overlay
+              ExecStart=/usr/local/bin/rke2 server
+
+              [Install]
+              WantedBy=multi-user.target
+            mode: '0644'
+
+        - name: Create RKE2 data directory
+          file:
+            path: /var/lib/rancher/rke2
+            state: directory
+            mode: '0755'
+
+        - name: Start primary master
+          systemd:
+            daemon_reload: yes
+            name: rke2-server
+            enabled: yes
+            state: started
+
+        - name: Wait for primary master to be ready
+          wait_for:
+            port: 6443
+            host: "{{ ansible_default_ipv4.address }}"
+            delay: 30
+            timeout: 300
+
+        - name: Setup kubectl and kubeconfig
+          shell: |
+            ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+            mkdir -p ~/.kube
+            cp /etc/rancher/rke2/rke2.yaml ~/.kube/config
+            chmod 600 ~/.kube/config
+            sed -i 's/127.0.0.1/{{ ansible_default_ipv4.address }}/g' ~/.kube/config
+
+        - name: Install Helm
+          shell: |
+            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          args:
+            creates: /usr/local/bin/helm
+
+        - name: Read actual cluster token
+          slurp:
+            src: /var/lib/rancher/rke2/server/node-token
+          register: node_token
+          ignore_errors: yes
+
+        - name: Store actual token
+          copy:
+            content: "{{ node_token.content | b64decode | trim }}"
+            dest: /tmp/cluster_token
+            mode: '0600'
+          when: not (node_token.failed | default(false))
+
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # Additional masters configuration
+    - name: Configure additional masters
+      block:
+        - name: Get cluster token from primary master
+          slurp:
+            src: /var/lib/rancher/rke2/server/node-token
+          register: cluster_token_file
+          delegate_to: "{{ groups['k8s_masters'][0] }}"
+          ignore_errors: yes
+
+        - name: Fallback to static token
+          slurp:
+            src: /tmp/cluster_token_static
+          register: static_token_file
+          delegate_to: "{{ groups['k8s_masters'][0] }}"
+          when: cluster_token_file.failed | default(false)
+
+        - name: Set cluster token
+          set_fact:
+            cluster_token: "{{ (cluster_token_file.content | b64decode | trim) if not (cluster_token_file.failed | default(false)) else (static_token_file.content | b64decode | trim) }}"
+
+        - name: Create RKE2 server config for additional masters
+          copy:
+            dest: /etc/rancher/rke2/config.yaml
+            content: |
+              server: https://{{ hostvars[groups['k8s_masters'][0]]['ansible_default_ipv4']['address'] }}:9345
+              token: {{ cluster_token }}
+              cluster-cidr: {{ cluster_cidr }}
+              service-cidr: {{ service_cidr }}
+              tls-san:
+                - {{ ansible_default_ipv4.address }}
+                - {{ rancher_hostname }}
+              disable:
+                - rke2-ingress-nginx
+            mode: '0644'
+
+        - name: Create RKE2 server systemd service
+          copy:
+            dest: /etc/systemd/system/rke2-server.service
+            content: |
+              [Unit]
+              Description=Rancher Kubernetes Engine v2 (server)
+              Documentation=https://rancher.com/docs/rke2
+              Wants=network-online.target
+              After=network-online.target
+              Conflicts=rke2-agent.service
+
+              [Service]
+              Type=notify
+              EnvironmentFile=-/etc/default/rke2-server
+              EnvironmentFile=-/etc/sysconfig/rke2-server
+              EnvironmentFile=-/usr/local/lib/systemd/system/rke2-server.env
+              KillMode=process
+              Delegate=yes
+              LimitNOFILE=1048576
+              LimitNPROC=infinity
+              LimitCORE=infinity
+              TasksMax=infinity
+              TimeoutStartSec=0
+              Restart=always
+              RestartSec=5s
+              ExecStartPre=-/sbin/modprobe br_netfilter
+              ExecStartPre=-/sbin/modprobe overlay
+              ExecStart=/usr/local/bin/rke2 server
+
+              [Install]
+              WantedBy=multi-user.target
+            mode: '0644'
+
+        - name: Start additional masters
+          systemd:
+            daemon_reload: yes
+            name: rke2-server
+            enabled: yes
+            state: started
+
+        - name: Wait for additional masters to be ready
+          wait_for:
+            port: 6443
+            host: "{{ ansible_default_ipv4.address }}"
+            delay: 30
+            timeout: 300
+
+        - name: Setup kubectl on additional masters
+          shell: |
+            ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+            mkdir -p ~/.kube
+            cp /etc/rancher/rke2/rke2.yaml ~/.kube/config
+            chmod 600 ~/.kube/config
+            sed -i 's/127.0.0.1/{{ ansible_default_ipv4.address }}/g' ~/.kube/config
+
+      when: inventory_hostname in groups['k8s_masters'][1:]
+
+    # Workers configuration
+    - name: Configure worker nodes
+      block:
+        - name: Get cluster token from primary master
+          slurp:
+            src: /var/lib/rancher/rke2/server/node-token
+          register: cluster_token_file
+          delegate_to: "{{ groups['k8s_masters'][0] }}"
+          ignore_errors: yes
+
+        - name: Fallback to static token
+          slurp:
+            src: /tmp/cluster_token_static
+          register: static_token_file
+          delegate_to: "{{ groups['k8s_masters'][0] }}"
+          when: cluster_token_file.failed | default(false)
+
+        - name: Set cluster token
+          set_fact:
+            cluster_token: "{{ (cluster_token_file.content | b64decode | trim) if not (cluster_token_file.failed | default(false)) else (static_token_file.content | b64decode | trim) }}"
+
+        - name: Create RKE2 agent config
+          copy:
+            dest: /etc/rancher/rke2/config.yaml
+            content: |
+              server: https://{{ hostvars[groups['k8s_masters'][0]]['ansible_default_ipv4']['address'] }}:9345
+              token: {{ cluster_token }}
+            mode: '0644'
+
+        - name: Create RKE2 agent systemd service
+          copy:
+            dest: /etc/systemd/system/rke2-agent.service
+            content: |
+              [Unit]
+              Description=Rancher Kubernetes Engine v2 (agent)
+              Documentation=https://rancher.com/docs/rke2
+              Wants=network-online.target
+              After=network-online.target
+              Conflicts=rke2-server.service
+
+              [Service]
+              Type=notify
+              EnvironmentFile=-/etc/default/rke2-agent
+              EnvironmentFile=-/etc/sysconfig/rke2-agent
+              EnvironmentFile=-/usr/local/lib/systemd/system/rke2-agent.env
+              KillMode=process
+              Delegate=yes
+              LimitNOFILE=1048576
+              LimitNPROC=infinity
+              LimitCORE=infinity
+              TasksMax=infinity
+              TimeoutStartSec=0
+              Restart=always
+              RestartSec=5s
+              ExecStartPre=-/sbin/modprobe br_netfilter
+              ExecStartPre=-/sbin/modprobe overlay
+              ExecStart=/usr/local/bin/rke2 agent
+
+              [Install]
+              WantedBy=multi-user.target
+            mode: '0644'
+
+        - name: Start worker agents
+          systemd:
+            daemon_reload: yes
+            name: rke2-agent
+            enabled: yes
+            state: started
+
+        - name: Wait for agents to be ready
+          wait_for:
+            port: 10250
+            host: "{{ ansible_default_ipv4.address }}"
+            delay: 30
+            timeout: 300
+
+      when: inventory_hostname in groups['k8s_workers']
+
+    # Final cluster verification on primary master
+    - name: Verify and setup cluster
+      block:
+        - name: Add Helm repositories
+          shell: |
+            /usr/local/bin/helm repo add rancher-stable https://releases.rancher.com/server-charts/stable
+            /usr/local/bin/helm repo add jetstack https://charts.jetstack.io
+            /usr/local/bin/helm repo update
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+        - name: Verify cluster nodes
+          shell: /usr/local/bin/kubectl get nodes
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+          register: cluster_nodes
+
+        - name: Display cluster status
+          debug:
+            msg: "{{ cluster_nodes.stdout_lines }}"
+
+      when: inventory_hostname == groups['k8s_masters'][0]
