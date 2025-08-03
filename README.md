@@ -2,20 +2,76 @@
 
 Production-ready RKE2 Kubernetes cluster deployment on AWS with unified master architecture and manual Rancher installation. This repository provides complete infrastructure automation and step-by-step Rancher setup for `rancher.smartcorex.com`.
 
-## Architecture Overview (Updated January 31, 2025)
+## Architecture Overview (Updated August 2, 2025)
 
-### Infrastructure Components  
-- **3 Kubernetes Masters with RKE2**: Control plane nodes (10.122.10.76, 10.122.11.172, 10.122.12.175)
-- **3 Kubernetes Workers**: Data plane nodes (10.122.10.159, 10.122.11.249, 10.122.12.215)
-- **1 Ansible Controller**: Bastion host for secure access (3.17.155.172)
-- **ALB**: Application Load Balancer for Rancher at rancher.smartcorex.com
+## IP Address Management
+
+### Current Infrastructure IPs
+**Masters:**
+- master-1: 10.122.10.49 (Primary)
+- master-2: 10.122.11.18
+- master-3: 10.122.12.216
+
+**Workers:**
+- worker-1: 10.122.10.160
+- worker-2: 10.122.11.19
+- worker-3: 10.122.12.121
+
+**Ansible Controller:**
+- Private: 10.122.1.45
+- Public: 18.217.177.17
+
+### When IPs Change (Cost Management)
+When recreating AWS infrastructure, update:
+1. `ansible/inventory/hosts.yml` - All node IPs
+2. `ansible/playbooks/04-alb-setup.yml` - Master node list
+3. `README.md` - Connection examples
+4. `replit.md` - Architecture section
+
+See **IP-UPDATE-GUIDE.md** for detailed instructions.
+
+### On-Premises Deployment (Without PEM Keys)
+For deploying to on-premises servers without AWS PEM keys:
+
+1. **SSH Key Setup**:
+   ```bash
+   # Generate SSH key pair
+   ssh-keygen -t rsa -b 4096 -f ~/.ssh/onprem_rke2
+   
+   # Copy to all nodes
+   ssh-copy-id -i ~/.ssh/onprem_rke2.pub root@YOUR_NODE_IP
+   ```
+
+2. **Create On-Premises Inventory**: Copy `ansible/inventory/hosts.yml` to `hosts-onprem.yml`:
+   ```yaml
+   # Update with your network IPs and remove PEM key references
+   ansible_host: 192.168.1.10  # Your IPs
+   ansible_user: root          # Your user
+   ansible_ssh_private_key_file: ~/.ssh/onprem_rke2
+   # Remove ansible_ssh_private_key_file line for password auth
+   ```
+
+3. **Network Requirements**: Configure firewall ports:
+   - Masters: 6443, 9345, 10250
+   - Workers: 10250, 10251
+   - NodePort: 30000-32767
+
+4. **Deploy**: `ansible-playbook -i hosts-onprem.yml deploy-all.yml`
+
+See **IP-UPDATE-GUIDE.md** for complete on-premises setup details.
+
+### Infrastructure Components (Updated August 2, 2025)
+- **3 Kubernetes Masters with RKE2**: Control plane nodes (10.122.10.49, 10.122.11.18, 10.122.12.216)
+- **3 Kubernetes Workers**: Data plane nodes (10.122.10.160, 10.122.11.19, 10.122.12.121)
+- **1 Ansible Controller**: Bastion host for secure access (10.122.1.45 / Public: 18.217.177.17)
+- **ALB**: Application Load Balancer for Rancher at rancher.smartcorex.com (rancher-alb-739800955.us-east-2.elb.amazonaws.com)
 
 ### New Unified RKE2 Architecture
 
 This system now uses a **unified RKE2 master architecture** for better reliability and simplified management:
 
-#### Master Nodes with Integrated RKE2 (Control Plane) - 10.122.10.76, 10.122.11.172, 10.122.12.175
-- **Primary Master (10.122.10.76)**: Initializes the cluster and generates tokens
+#### Master Nodes with Integrated RKE2 (Control Plane) - 10.122.10.49, 10.122.11.18, 10.122.12.216
+- **Primary Master (10.122.10.49)**: Initializes the cluster and generates tokens
 - **Additional Masters**: Join as additional RKE2 servers for high availability
 - **Functions**:
   - RKE2 cluster management (ETCD, API server, scheduler)
@@ -24,7 +80,7 @@ This system now uses a **unified RKE2 master architecture** for better reliabili
   - **Rancher UI runs on these master nodes**
   - Cluster token generation and certificate management
 
-#### Kubernetes Worker Nodes (Data Plane) - 10.122.10.159, 10.122.11.249, 10.122.12.215
+#### Kubernetes Worker Nodes (Data Plane) - 10.122.10.160, 10.122.11.19, 10.122.12.121
 - **Purpose**: Runs actual applications and workloads
 - **Connection**: Joins cluster using token from primary master
 - **Functions**:
@@ -59,11 +115,11 @@ terraform apply
 ### 2. Setup Ansible Controller
 ```bash
 # Copy SSH key and ansible directory
-scp -i ~/.ssh/SMP-ANSIBLE.pem ~/.ssh/SMP-ANSIBLE.pem ec2-user@3.17.155.172:~/.ssh/
-scp -i ~/.ssh/SMP-ANSIBLE.pem -r ansible/ ec2-user@3.17.155.172:~/
+scp -i ~/.ssh/SMP-ANSIBLE.pem ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.217.177.17:~/.ssh/
+scp -i ~/.ssh/SMP-ANSIBLE.pem -r ansible/ ec2-user@18.217.177.17:~/
 
 # SSH to controller and install Ansible
-ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@3.17.155.172
+ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.217.177.17
 chmod 600 ~/.ssh/SMP-ANSIBLE.pem
 
 # Install Ansible on RHEL 9
