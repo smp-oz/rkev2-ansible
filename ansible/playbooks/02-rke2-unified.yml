@@ -23,10 +23,11 @@
         cd /tmp
         curl -LO https://github.com/rancher/rke2/releases/download/{{ rke2_download_version }}/rke2.linux-amd64.tar.gz
         tar -xzf rke2.linux-amd64.tar.gz
-        cp rke2*/rke2 /usr/local/bin/
+        cp rke2.linux-amd64/bin/rke2 /usr/local/bin/
         chmod +x /usr/local/bin/rke2
       args:
         creates: /usr/local/bin/rke2
+        executable: /bin/bash
 
     # Primary master initialization
     - name: Generate and configure primary master
