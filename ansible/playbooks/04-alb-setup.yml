@@ -5,9 +5,9 @@
   gather_facts: yes
   vars:
     master_nodes:
-      - "10.122.10.76"
-      - "10.122.11.172" 
-      - "10.122.12.175"
+      - "10.122.10.49"
+      - "10.122.11.18" 
+      - "10.122.12.216"
     
   tasks:
     - name: Debug - Check all kube-system services and nginx resources
