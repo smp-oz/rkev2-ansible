@@ -470,9 +470,17 @@
           pause:
             seconds: 30
 
-        - name: Install or upgrade Rancher (with webhook retries)
+        - name: Temporarily disable nginx-ingress webhook for Rancher installation
           shell: |
-            # First attempt with webhook validation disabled if needed
+            # Delete the ValidatingAdmissionWebhook that's causing issues
+            kubectl delete validatingadmissionwebhook ingress-nginx-admission || true
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+          ignore_errors: yes
+
+        - name: Install Rancher without webhook validation
+          shell: |
             helm upgrade --install rancher rancher-stable/rancher \
               --namespace cattle-system \
               --create-namespace \
@@ -481,23 +489,19 @@
               --set ingress.tls.source=letsEncrypt \
               --set letsEncrypt.email=admin@{{ rancher_hostname }} \
               --set letsEncrypt.ingress.class=nginx \
-              --version {{ rancher_version }} \
-              --disable-openapi-validation || \
-            # Retry with webhook validation disabled completely
-            kubectl create namespace cattle-system --dry-run=client -o yaml | kubectl apply -f - && \
-            helm upgrade --install rancher rancher-stable/rancher \
-              --namespace cattle-system \
-              --set hostname={{ rancher_hostname }} \
-              --set bootstrapPassword=admin \
-              --set ingress.tls.source=letsEncrypt \
-              --set letsEncrypt.email=admin@{{ rancher_hostname }} \
-              --set letsEncrypt.ingress.class=nginx \
-              --version {{ rancher_version }} \
-              --disable-openapi-validation \
-              --wait=false
+              --version {{ rancher_version }}
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+
+        - name: Re-enable nginx-ingress webhook (optional)
+          shell: |
+            # Restart nginx-ingress to restore webhook if needed
+            kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx || true
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+          ignore_errors: yes
 
         - name: Wait for Rancher deployment to be ready
           shell: kubectl rollout status deploy/rancher -n cattle-system --timeout=600s
