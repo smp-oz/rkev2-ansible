@@ -69,6 +69,13 @@
         tar -xzf rke2.linux-amd64.tar.gz
         cp bin/rke2 /usr/local/bin/
         chmod +x /usr/local/bin/rke2
+        # Also copy other required binaries if they exist
+        cp bin/kubectl /usr/local/bin/ 2>/dev/null || true
+        cp bin/crictl /usr/local/bin/ 2>/dev/null || true
+        cp bin/ctr /usr/local/bin/ 2>/dev/null || true
+        chmod +x /usr/local/bin/kubectl 2>/dev/null || true
+        chmod +x /usr/local/bin/crictl 2>/dev/null || true
+        chmod +x /usr/local/bin/ctr 2>/dev/null || true
       args:
         creates: /usr/local/bin/rke2
         executable: /bin/bash
@@ -151,7 +158,11 @@
 
         - name: Setup kubectl and kubeconfig
           shell: |
-            ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+            # Wait for RKE2 to fully initialize and create kubectl
+            sleep 30
+            if [ -f /var/lib/rancher/rke2/bin/kubectl ]; then
+              ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+            fi
             mkdir -p ~/.kube
             cp /etc/rancher/rke2/rke2.yaml ~/.kube/config
             chmod 600 ~/.kube/config
@@ -269,7 +280,11 @@
 
         - name: Setup kubectl on additional masters
           shell: |
-            ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+            # Wait for RKE2 to fully initialize
+            sleep 30
+            if [ -f /var/lib/rancher/rke2/bin/kubectl ]; then
+              ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+            fi
             mkdir -p ~/.kube
             cp /etc/rancher/rke2/rke2.yaml ~/.kube/config
             chmod 600 ~/.kube/config
@@ -352,8 +367,8 @@
           wait_for:
             port: 10250
             host: "{{ ansible_default_ipv4.address }}"
-            delay: 30
-            timeout: 300
+            delay: 60
+            timeout: 600
 
       when: inventory_hostname in groups['k8s_workers']
 
@@ -372,7 +387,12 @@
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
 
         - name: Verify cluster nodes
-          shell: kubectl get nodes
+          shell: |
+            # Ensure kubectl is available
+            if [ ! -f /usr/local/bin/kubectl ] && [ -f /var/lib/rancher/rke2/bin/kubectl ]; then
+              ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+            fi
+            /usr/local/bin/kubectl get nodes
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
           register: cluster_nodes
