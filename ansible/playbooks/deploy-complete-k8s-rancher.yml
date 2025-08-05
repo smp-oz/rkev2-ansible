@@ -9,7 +9,7 @@
     cluster_cidr: "10.42.0.0/16"
     service_cidr: "10.43.0.0/16"
     rancher_hostname: "rancher.smartcorex.com"
-    rancher_version: "2.11.4"
+    rancher_version: "2.8.5"
     letsencrypt_email: "admin@smartcorex.com"
     
   tasks:
@@ -188,6 +188,13 @@
             mode: '0600'
           when: not (node_token.failed | default(false))
 
+        - name: Create shared token file for all nodes
+          copy:
+            content: "{{ node_token.content | b64decode | trim }}"
+            dest: /tmp/shared_cluster_token
+            mode: '0644'
+          when: not (node_token.failed | default(false))
+
       when: inventory_hostname == groups['k8s_masters'][0]
 
     # ============================================================
@@ -290,23 +297,24 @@
     # ============================================================
     - name: Configure worker nodes
       block:
-        - name: Get cluster token from primary master
+        - name: Get shared cluster token from primary master
+          slurp:
+            src: /tmp/shared_cluster_token
+          register: shared_token_file
+          delegate_to: "{{ groups['k8s_masters'][0] }}"
+          ignore_errors: yes
+
+        - name: Fallback to node token from primary master
           slurp:
             src: /var/lib/rancher/rke2/server/node-token
           register: cluster_token_file
           delegate_to: "{{ groups['k8s_masters'][0] }}"
+          when: shared_token_file.failed | default(false)
           ignore_errors: yes
 
-        - name: Fallback to static token
-          slurp:
-            src: /tmp/cluster_token_static
-          register: static_token_file
-          delegate_to: "{{ groups['k8s_masters'][0] }}"
-          when: cluster_token_file.failed | default(false)
-
-        - name: Set cluster token
+        - name: Set cluster token from available source
           set_fact:
-            cluster_token: "{{ (cluster_token_file.content | b64decode | trim) if not (cluster_token_file.failed | default(false)) else (static_token_file.content | b64decode | trim) }}"
+            cluster_token: "{{ (shared_token_file.content | b64decode | trim) if not (shared_token_file.failed | default(false)) else (cluster_token_file.content | b64decode | trim) }}"
 
         - name: Create RKE2 agent config
           copy:
