@@ -714,7 +714,7 @@
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
         - name: Get bootstrap password
-          shell: kubectl get secret --namespace cattle-system bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}{{"\n"}}'
+          shell: kubectl get secret --namespace cattle-system bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}'
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
@@ -758,15 +758,9 @@
         rm -rf /etc/rancher/rke2/rke2.yaml
       ignore_errors: true
 
-    - name: Get fresh cluster token from master
-      shell: |
-        if [ -f "/tmp/shared_cluster_token" ]; then
-          echo "Using shared token from master"
-          cat /tmp/shared_cluster_token
-        else
-          echo "No shared token found - worker rejoin may fail"
-          exit 1
-        fi
+    - name: Get fresh cluster token from master via delegate
+      shell: cat /var/lib/rancher/rke2/server/node-token
+      delegate_to: "{{ groups['k8s_masters'][0] }}"
       register: cluster_token_result
 
     - name: Create RKE2 config for worker with fresh token
