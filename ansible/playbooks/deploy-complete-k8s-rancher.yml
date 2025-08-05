@@ -741,53 +741,54 @@
   # ============================================================
   # WORKER NODE REJOIN PHASE
   # ============================================================
-  - name: "WORKER NODES: Force rejoin cluster if missing"
-    block:
-      - name: Stop existing RKE2 agent if running
-        systemd:
-          name: rke2-agent
-          state: stopped
-        ignore_errors: true
+- name: "WORKER NODES: Force rejoin cluster if missing"
+  hosts: k8s_workers
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Stop existing RKE2 agent if running
+      systemd:
+        name: rke2-agent
+        state: stopped
+      ignore_errors: true
 
-      - name: Clean worker node state
-        shell: |
-          rm -rf /var/lib/rancher/rke2/agent
-          rm -rf /etc/rancher/rke2/rke2.yaml
-        ignore_errors: true
+    - name: Clean worker node state
+      shell: |
+        rm -rf /var/lib/rancher/rke2/agent
+        rm -rf /etc/rancher/rke2/rke2.yaml
+      ignore_errors: true
 
-      - name: Get fresh cluster token from master
-        shell: |
-          if [ -f "/tmp/shared_cluster_token" ]; then
-            echo "Using shared token from master"
-            cat /tmp/shared_cluster_token
-          else
-            echo "No shared token found - worker rejoin may fail"
-            exit 1
-          fi
-        register: cluster_token_result
+    - name: Get fresh cluster token from master
+      shell: |
+        if [ -f "/tmp/shared_cluster_token" ]; then
+          echo "Using shared token from master"
+          cat /tmp/shared_cluster_token
+        else
+          echo "No shared token found - worker rejoin may fail"
+          exit 1
+        fi
+      register: cluster_token_result
 
-      - name: Create RKE2 config for worker with fresh token
-        copy:
-          content: |
-            server: https://{{ hostvars[groups['k8s_masters'][0]]['ansible_default_ipv4']['address'] }}:9345
-            token: {{ cluster_token_result.stdout }}
-            node-label:
-              - "worker=true"
-          dest: /etc/rancher/rke2/config.yaml
-          mode: '0600'
+    - name: Create RKE2 config for worker with fresh token
+      copy:
+        content: |
+          server: https://{{ hostvars[groups['k8s_masters'][0]]['ansible_default_ipv4']['address'] }}:9345
+          token: {{ cluster_token_result.stdout }}
+          node-label:
+            - "worker=true"
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0600'
 
-      - name: Start and enable RKE2 agent
-        systemd:
-          name: rke2-agent
-          state: started
-          enabled: yes
+    - name: Start and enable RKE2 agent
+      systemd:
+        name: rke2-agent
+        state: started
+        enabled: yes
 
-      - name: Wait for worker to join cluster
-        pause:
-          seconds: 30
+    - name: Wait for worker to join cluster
+      pause:
+        seconds: 30
 
-      - name: Show worker status
-        debug:
-          msg: "Worker node {{ inventory_hostname }} rejoined cluster"
-
-    when: inventory_hostname in groups['k8s_workers']
+    - name: Show worker status
+      debug:
+        msg: "Worker node {{ inventory_hostname }} rejoined cluster"
