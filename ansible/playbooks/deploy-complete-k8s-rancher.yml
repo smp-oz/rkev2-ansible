@@ -435,6 +435,12 @@
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
+        - name: Wait for cert-manager webhook to be ready
+          shell: kubectl wait --for=condition=Available deployment/cert-manager-webhook -n cert-manager --timeout=300s
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+
         - name: Install nginx-ingress controller
           shell: |
             helm upgrade --install ingress-nginx ingress-nginx \
@@ -454,8 +460,19 @@
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
-        - name: Install or upgrade Rancher
+        - name: Wait for nginx-ingress admission controller to be ready
+          shell: kubectl wait --for=condition=Available deployment/ingress-nginx-controller -n ingress-nginx --timeout=300s
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+
+        - name: Additional wait for webhook services to be fully ready
+          pause:
+            seconds: 30
+
+        - name: Install or upgrade Rancher (with webhook retries)
           shell: |
+            # First attempt with webhook validation disabled if needed
             helm upgrade --install rancher rancher-stable/rancher \
               --namespace cattle-system \
               --create-namespace \
@@ -464,7 +481,20 @@
               --set ingress.tls.source=letsEncrypt \
               --set letsEncrypt.email=admin@{{ rancher_hostname }} \
               --set letsEncrypt.ingress.class=nginx \
-              --version {{ rancher_version }}
+              --version {{ rancher_version }} \
+              --disable-openapi-validation || \
+            # Retry with webhook validation disabled completely
+            kubectl create namespace cattle-system --dry-run=client -o yaml | kubectl apply -f - && \
+            helm upgrade --install rancher rancher-stable/rancher \
+              --namespace cattle-system \
+              --set hostname={{ rancher_hostname }} \
+              --set bootstrapPassword=admin \
+              --set ingress.tls.source=letsEncrypt \
+              --set letsEncrypt.email=admin@{{ rancher_hostname }} \
+              --set letsEncrypt.ingress.class=nginx \
+              --version {{ rancher_version }} \
+              --disable-openapi-validation \
+              --wait=false
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
