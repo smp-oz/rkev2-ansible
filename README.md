@@ -8,18 +8,18 @@ Production-ready RKE2 Kubernetes cluster deployment on AWS with unified master a
 
 ### Current Infrastructure IPs
 **Masters:**
-- master-1: 10.122.10.49 (Primary)
-- master-2: 10.122.11.18
-- master-3: 10.122.12.216
+- master-1: 10.122.10.214 (Primary)
+- master-2: 10.122.11.86
+- master-3: 10.122.12.50
 
 **Workers:**
-- worker-1: 10.122.10.160
-- worker-2: 10.122.11.19
-- worker-3: 10.122.12.121
+- worker-1: 10.122.10.27
+- worker-2: 10.122.11.227
+- worker-3: 10.122.12.99
 
 **Ansible Controller:**
-- Private: 10.122.1.45
-- Public: 18.217.177.17
+- Private: 10.122.1.49
+- Public: 18.191.71.210
 
 ### When IPs Change (Cost Management)
 When recreating AWS infrastructure, update:
@@ -28,50 +28,139 @@ When recreating AWS infrastructure, update:
 3. `README.md` - Connection examples
 4. `replit.md` - Architecture section
 
-See **IP-UPDATE-GUIDE.md** for detailed instructions.
+## IP Address Update Guide
+
+### When AWS Infrastructure is Recreated
+
+When you recreate the AWS infrastructure to save costs, IP addresses change. Here's what needs to be updated:
+
+#### Files to Update After Infrastructure Recreation
+
+**A. Ansible Inventory** (`ansible/inventory/hosts.yml`)
+Update sections:
+```yaml
+k8s_masters:
+  hosts:
+    master-1:
+      ansible_host: NEW_MASTER_1_IP  # ← UPDATE
+    master-2:
+      ansible_host: NEW_MASTER_2_IP  # ← UPDATE  
+    master-3:
+      ansible_host: NEW_MASTER_3_IP  # ← UPDATE
+
+k8s_workers:
+  hosts:
+    worker-1:
+      ansible_host: NEW_WORKER_1_IP # ← UPDATE
+    worker-2:
+      ansible_host: NEW_WORKER_2_IP # ← UPDATE
+    worker-3:
+      ansible_host: NEW_WORKER_3_IP # ← UPDATE
+
+vars:
+  rke2_server_ip: NEW_PRIMARY_MASTER_IP   # ← UPDATE (Primary master)
+```
+
+**B. Update Documentation Files**
+- `replit.md` - Update architecture section with new IPs
+- `README.md` - Update connection examples
+
+#### Quick Update Commands
+
+```bash
+# Get new IPs from Terraform output
+terraform output
+
+# Update inventory file
+vim ansible/inventory/hosts.yml
+
+# Update documentation
+vim replit.md README.md
+
+# Test connectivity
+ansible all -m ping
+
+# Verify SSH access to new bastion IP
+ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@NEW_BASTION_PUBLIC_IP
+```
 
 ### On-Premises Deployment (Without PEM Keys)
+
 For deploying to on-premises servers without AWS PEM keys:
 
-1. **SSH Key Setup**:
-   ```bash
-   # Generate SSH key pair
-   ssh-keygen -t rsa -b 4096 -f ~/.ssh/onprem_rke2
-   
-   # Copy to all nodes
-   ssh-copy-id -i ~/.ssh/onprem_rke2.pub root@YOUR_NODE_IP
-   ```
+#### 1. SSH Key Setup
+```bash
+# Generate SSH key pair
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/onprem_rke2
 
-2. **Create On-Premises Inventory**: Copy `ansible/inventory/hosts.yml` to `hosts-onprem.yml`:
-   ```yaml
-   # Update with your network IPs and remove PEM key references
-   ansible_host: 192.168.1.10  # Your IPs
-   ansible_user: root          # Your user
-   ansible_ssh_private_key_file: ~/.ssh/onprem_rke2
-   # Remove ansible_ssh_private_key_file line for password auth
-   ```
+# Copy to all nodes
+ssh-copy-id -i ~/.ssh/onprem_rke2.pub root@YOUR_NODE_IP
+```
 
-3. **Network Requirements**: Configure firewall ports:
-   - Masters: 6443, 9345, 10250
-   - Workers: 10250, 10251
-   - NodePort: 30000-32767
+#### 2. Create On-Premises Inventory
+Copy `ansible/inventory/hosts.yml` to `hosts-onprem.yml`:
+```yaml
+# Update with your network IPs and remove PEM key references
+ansible_host: 192.168.1.10  # Your IPs
+ansible_user: root          # Your user
+ansible_ssh_private_key_file: ~/.ssh/onprem_rke2
+# Remove ansible_ssh_private_key_file line for password auth
+```
 
-4. **Deploy**: `ansible-playbook -i hosts-onprem.yml deploy-all.yml`
+#### 3. Network Requirements
+Configure firewall ports:
+- **Masters**: 6443, 9345, 10250, 2379-2380
+- **Workers**: 10250, 10251
+- **NodePort**: 30000-32767
+- **Flannel**: 8472/UDP
 
-See **IP-UPDATE-GUIDE.md** for complete on-premises setup details.
+**Example firewalld commands:**
+```bash
+# On all nodes
+firewall-cmd --permanent --add-port=10250/tcp
+firewall-cmd --permanent --add-port=8472/udp
 
-### Infrastructure Components (Updated August 2, 2025)
-- **3 Kubernetes Masters with RKE2**: Control plane nodes (10.122.10.49, 10.122.11.18, 10.122.12.216)
-- **3 Kubernetes Workers**: Data plane nodes (10.122.10.160, 10.122.11.19, 10.122.12.121)
-- **1 Ansible Controller**: Bastion host for secure access (10.122.1.45 / Public: 18.217.177.17)
-- **ALB**: Application Load Balancer for Rancher at rancher.smartcorex.com (rancher-alb-739800955.us-east-2.elb.amazonaws.com)
+# On masters only
+firewall-cmd --permanent --add-port=6443/tcp
+firewall-cmd --permanent --add-port=9345/tcp
+firewall-cmd --permanent --add-port=2379-2380/tcp
+
+# On workers for NodePort services
+firewall-cmd --permanent --add-port=30000-32767/tcp
+
+firewall-cmd --reload
+```
+
+#### 4. DNS Configuration (On-Premises)
+Update `/etc/hosts` or internal DNS:
+```bash
+# Add to /etc/hosts on all nodes
+192.168.1.10    master-1 rancher.yourdomain.com
+192.168.1.11    master-2
+192.168.1.12    master-3
+192.168.1.20    worker-1
+192.168.1.21    worker-2
+192.168.1.22    worker-3
+```
+
+#### 5. Deploy
+```bash
+# Use custom inventory
+ansible-playbook -i ansible/inventory/hosts-onprem.yml ansible/playbooks/deploy-complete-k8s-rancher.yml
+```
+
+### Infrastructure Components (Updated August 5, 2025)
+- **3 Kubernetes Masters with RKE2**: Control plane nodes (10.122.10.214, 10.122.11.86, 10.122.12.50)
+- **3 Kubernetes Workers**: Data plane nodes (10.122.10.27, 10.122.11.227, 10.122.12.99)
+- **1 Ansible Controller**: Bastion host for secure access (10.122.1.49 / Public: 18.191.71.210)
+- **ALB**: Application Load Balancer for Rancher at rancher.smartcorex.com (rancher-alb-704246084.us-east-2.elb.amazonaws.com)
 
 ### New Unified RKE2 Architecture
 
 This system now uses a **unified RKE2 master architecture** for better reliability and simplified management:
 
-#### Master Nodes with Integrated RKE2 (Control Plane) - 10.122.10.49, 10.122.11.18, 10.122.12.216
-- **Primary Master (10.122.10.49)**: Initializes the cluster and generates tokens
+#### Master Nodes with Integrated RKE2 (Control Plane) - 10.122.10.214, 10.122.11.86, 10.122.12.50
+- **Primary Master (10.122.10.214)**: Initializes the cluster and generates tokens
 - **Additional Masters**: Join as additional RKE2 servers for high availability
 - **Functions**:
   - RKE2 cluster management (ETCD, API server, scheduler)
@@ -80,7 +169,7 @@ This system now uses a **unified RKE2 master architecture** for better reliabili
   - **Rancher UI runs on these master nodes**
   - Cluster token generation and certificate management
 
-#### Kubernetes Worker Nodes (Data Plane) - 10.122.10.160, 10.122.11.19, 10.122.12.121
+#### Kubernetes Worker Nodes (Data Plane) - 10.122.10.27, 10.122.11.227, 10.122.12.99
 - **Purpose**: Runs actual applications and workloads
 - **Connection**: Joins cluster using token from primary master
 - **Functions**:
@@ -115,11 +204,11 @@ terraform apply
 ### 2. Setup Ansible Controller
 ```bash
 # Copy SSH key and ansible directory
-scp -i ~/.ssh/SMP-ANSIBLE.pem ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.217.177.17:~/.ssh/
-scp -i ~/.ssh/SMP-ANSIBLE.pem -r ansible/ ec2-user@18.217.177.17:~/
+scp -i ~/.ssh/SMP-ANSIBLE.pem ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.191.71.210:~/.ssh/
+scp -i ~/.ssh/SMP-ANSIBLE.pem -r ansible/ ec2-user@18.191.71.210:~/
 
 # SSH to controller and install Ansible
-ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.217.177.17
+ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.191.71.210
 chmod 600 ~/.ssh/SMP-ANSIBLE.pem
 
 # Install Ansible on RHEL 9
@@ -128,134 +217,42 @@ sudo yum install -y ansible git python3-pip wget curl
 ansible --version
 ```
 
-### 3. Deploy RKE2 Cluster
+### 3. Deploy Complete Cluster with Single Playbook
 ```bash
 cd ~/ansible
 
 # Test connectivity to all nodes
 ansible all -m ping
 
-# Deploy complete RKE2 cluster (10-15 minutes)
-ansible-playbook deploy-all.yml
+# Deploy everything: K8s + Rancher + SSL + Ingress (30-45 minutes)
+ansible-playbook ansible/playbooks/deploy-complete-k8s-rancher.yml
 ```
 
-### 4. Manual Rancher Installation
+### 4. Configure ALB and Access Rancher
 
-After RKE2 cluster is ready, follow these steps for Rancher installation:
-
-#### Step 1: Configure kubectl and Install nginx-ingress
-```bash
-# SSH to RKE2 server
-ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@3.133.147.25
-ssh ec2-user@10.122.10.221
-sudo su -
-
-# Configure kubectl
-export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-
-# Verify cluster status
-kubectl get nodes -o wide
-
-# Add nginx-ingress repository
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-helm repo update
-
-# Install nginx-ingress with ALB-compatible configuration
-helm install nginx-alb ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx \
-  --create-namespace \
-  --set controller.ingressClassResource.name=nginx-alb \
-  --set controller.ingressClass=nginx-alb \
-  --set controller.service.type=NodePort \
-  --set controller.service.nodePorts.https=30443 \
-  --set controller.service.nodePorts.http=30080 \
-  --set controller.config.use-forwarded-headers=true \
-  --set controller.config.compute-full-forwarded-for=true \
-  --set controller.config.proxy-real-ip-cidr="10.122.0.0/16" \
-  --wait --timeout=300s
-
-# Verify nginx-ingress installation
-kubectl get svc -n ingress-nginx
-kubectl get pods -n ingress-nginx
-```
-
-#### Step 2: Install cert-manager
-```bash
-# Create cert-manager namespace
-kubectl create namespace cert-manager
-
-# Add cert-manager repository
-helm repo add jetstack https://charts.jetstack.io
-helm repo update
-
-# Install cert-manager
-helm install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --version v1.13.0 \
-  --set installCRDs=true \
-  --wait \
-  --timeout=10m
-
-# Verify cert-manager
-kubectl get pods -n cert-manager
-```
-
-#### Step 3: Install Rancher
-```bash
-# Create Rancher namespace
-kubectl create namespace cattle-system
-
-# Add Rancher repository
-helm repo add rancher-stable https://releases.rancher.com/server-charts/stable
-helm repo update
-
-# Create required TLS CA secret
-kubectl create secret generic tls-ca \
-  --from-literal=cacerts.pem="" \
-  --namespace cattle-system
-
-# IMPORTANT: Delete webhook validation to avoid timeout issues
-kubectl delete validatingwebhookconfiguration nginx-alb-ingress-nginx-admission || true
-
-# Install Rancher with nginx-alb ingress class
-helm install rancher rancher-stable/rancher \
-  --namespace cattle-system \
-  --set hostname=rancher.smartcorex.com \
-  --set ingress.tls.source=secret \
-  --set privateCA=true \
-  --set ingress.ingressClassName=nginx-alb \
-  --version=2.9.3 \
-  --wait \
-  --timeout=15m
-
-# Verify Rancher installation
-kubectl get pods -n cattle-system
-kubectl get svc -n cattle-system
-kubectl get ingress -n cattle-system
-```
-
-#### Step 4: Configure ALB Target Group
-Update your AWS ALB target group to use NodePort 30443:
+After deployment completes, run the ALB registration script:
 
 ```bash
-# Get the NodePort (should be 30443)
-kubectl get svc nginx-alb-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}'
-
-# Update ALB target group to use port 30443 instead of 443
-# Target Group Configuration:
-# - Protocol: HTTPS
-# - Port: 30443
-# - Health Check Path: /healthz
-# - Health Check Protocol: HTTP
-# - Health Check Port: 30080
-# - Targets: 10.122.10.46:30443, 10.122.11.81:30443, 10.122.12.28:30443
+# On the ansible controller (or any machine with AWS CLI configured)
+bash /tmp/register_alb_targets.sh
 ```
 
-#### Step 5: Access Rancher
-1. Wait 5-10 minutes for all pods to be ready
-2. Access Rancher UI: https://rancher.smartcorex.com
-3. Get initial password: `kubectl get secret --namespace cattle-system bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}{{"\n"}}'`
-4. Complete Rancher setup wizard
+#### Access Rancher UI
+```bash
+# Get the bootstrap password
+kubectl get secret --namespace cattle-system bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}'
+
+# Access Rancher at
+https://rancher.smartcorex.com
+# Default username: admin
+# Password: admin (or the bootstrap password above)
+```
+
+#### Verify Deployment
+```bash
+# Run the verification script
+bash /tmp/verify_cluster.sh
+```
 
 ## Current Infrastructure Status
 
