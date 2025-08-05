@@ -158,11 +158,7 @@
 
         - name: Setup kubectl and kubeconfig
           shell: |
-            # Wait for RKE2 to fully initialize and create kubectl
-            sleep 30
-            if [ -f /var/lib/rancher/rke2/bin/kubectl ]; then
-              ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
-            fi
+            ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
             mkdir -p ~/.kube
             cp /etc/rancher/rke2/rke2.yaml ~/.kube/config
             chmod 600 ~/.kube/config
@@ -280,11 +276,7 @@
 
         - name: Setup kubectl on additional masters
           shell: |
-            # Wait for RKE2 to fully initialize
-            sleep 30
-            if [ -f /var/lib/rancher/rke2/bin/kubectl ]; then
-              ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
-            fi
+            ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
             mkdir -p ~/.kube
             cp /etc/rancher/rke2/rke2.yaml ~/.kube/config
             chmod 600 ~/.kube/config
@@ -363,12 +355,9 @@
             enabled: yes
             state: started
 
-        - name: Wait for agents to be ready
-          wait_for:
-            port: 10250
-            host: "{{ ansible_default_ipv4.address }}"
-            delay: 60
-            timeout: 600
+        - name: Wait for agents to start (no port check needed)
+          pause:
+            seconds: 30
 
       when: inventory_hostname in groups['k8s_workers']
 
@@ -387,12 +376,7 @@
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
 
         - name: Verify cluster nodes
-          shell: |
-            # Ensure kubectl is available
-            if [ ! -f /usr/local/bin/kubectl ] && [ -f /var/lib/rancher/rke2/bin/kubectl ]; then
-              ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
-            fi
-            /usr/local/bin/kubectl get nodes
+          shell: kubectl get nodes
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
           register: cluster_nodes
@@ -416,6 +400,7 @@
           shell: kubectl wait --for=condition=Ready pods -l app=cert-manager -n cert-manager --timeout=300s
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
 
         - name: Install nginx-ingress controller
           shell: |
@@ -434,6 +419,7 @@
           shell: kubectl wait --for=condition=Ready pods -l app.kubernetes.io/name=ingress-nginx -n ingress-nginx --timeout=300s
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
 
         - name: Install Rancher
           shell: |
@@ -454,11 +440,13 @@
           shell: kubectl rollout status deploy/rancher -n cattle-system --timeout=600s
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
 
         - name: Get bootstrap password
           shell: kubectl get secret --namespace cattle-system bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}{{"\n"}}'
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
           register: bootstrap_password
           ignore_errors: true
 
