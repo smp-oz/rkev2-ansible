@@ -292,16 +292,16 @@
         content: |
           [Unit]
           Description=Rancher Kubernetes Engine v2 (server)
-          Documentation=https://rancher.com/docs/rke2/latest/en/
+          Documentation=https://rancher.com/docs/rke2
           Wants=network-online.target
           After=network-online.target
           Conflicts=rke2-agent.service
           
           [Service]
           Type=notify
-          EnvironmentFile=-/etc/default/%N
-          EnvironmentFile=-/etc/sysconfig/%N
-          EnvironmentFile=-/usr/local/lib/systemd/system/%N.env
+          EnvironmentFile=-/etc/default/rke2-server
+          EnvironmentFile=-/etc/sysconfig/rke2-server
+          EnvironmentFile=-/usr/local/lib/systemd/system/rke2-server.env
           KillMode=process
           Delegate=yes
           LimitNOFILE=1048576
@@ -311,7 +311,6 @@
           TimeoutStartSec=0
           Restart=always
           RestartSec=5s
-          ExecStartPre=/bin/sh -xc '! /usr/bin/systemctl is-enabled --quiet nm-cloud-setup.service'
           ExecStartPre=-/sbin/modprobe br_netfilter
           ExecStartPre=-/sbin/modprobe overlay
           ExecStart=/usr/local/bin/rke2 server
@@ -327,16 +326,16 @@
         content: |
           [Unit]
           Description=Rancher Kubernetes Engine v2 (agent)
-          Documentation=https://rancher.com/docs/rke2/latest/en/
+          Documentation=https://rancher.com/docs/rke2
           Wants=network-online.target
           After=network-online.target
           Conflicts=rke2-server.service
           
           [Service]
           Type=notify
-          EnvironmentFile=-/etc/default/%N
-          EnvironmentFile=-/etc/sysconfig/%N
-          EnvironmentFile=-/usr/local/lib/systemd/system/%N.env
+          EnvironmentFile=-/etc/default/rke2-agent
+          EnvironmentFile=-/etc/sysconfig/rke2-agent
+          EnvironmentFile=-/usr/local/lib/systemd/system/rke2-agent.env
           KillMode=process
           Delegate=yes
           LimitNOFILE=1048576
@@ -346,7 +345,6 @@
           TimeoutStartSec=0
           Restart=always
           RestartSec=5s
-          ExecStartPre=/bin/sh -xc '! /usr/bin/systemctl is-enabled --quiet nm-cloud-setup.service'
           ExecStartPre=-/sbin/modprobe br_netfilter
           ExecStartPre=-/sbin/modprobe overlay
           ExecStart=/usr/local/bin/rke2 agent
@@ -368,12 +366,55 @@
       debug:
         msg: "Starting primary master node"
 
+    - name: Debug RKE2 binary before starting service
+      shell: |
+        echo "Checking RKE2 binary:"
+        ls -la /usr/local/bin/rke2 || echo "RKE2 binary not found in /usr/local/bin/"
+        ls -la /opt/rke2/bin/rke2 || echo "RKE2 binary not found in /opt/rke2/bin/"
+        echo "Checking systemd service:"
+        cat /etc/systemd/system/rke2-server.service
+      register: debug_rke2_binary
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Show debug output
+      debug:
+        msg: "{{ debug_rke2_binary.stdout_lines }}"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
     - name: Start and enable RKE2 server on primary master
       systemd:
+        daemon_reload: true
         name: rke2-server
         enabled: true
         state: started
       when: inventory_hostname == groups['k8s_masters'][0]
+      register: rke2_start_result
+      ignore_errors: true
+
+    - name: Debug RKE2 service failure
+      shell: |
+        echo "=== RKE2 Server Service Status ==="
+        systemctl status rke2-server.service --no-pager -l || true
+        echo "=== RKE2 Server Service Journal ==="
+        journalctl -xeu rke2-server.service --no-pager -l | tail -50 || true
+      register: rke2_debug_output
+      when: 
+        - inventory_hostname == groups['k8s_masters'][0]
+        - rke2_start_result.failed | default(false)
+
+    - name: Show RKE2 debug output
+      debug:
+        msg: "{{ rke2_debug_output.stdout_lines }}"
+      when: 
+        - inventory_hostname == groups['k8s_masters'][0]
+        - rke2_start_result.failed | default(false)
+
+    - name: Fail if primary master can't start
+      fail:
+        msg: "Primary master RKE2 server failed to start. Check the debug output above."
+      when:
+        - inventory_hostname == groups['k8s_masters'][0]
+        - rke2_start_result.failed | default(false)
 
     - name: Wait for primary master to be ready
       wait_for:
