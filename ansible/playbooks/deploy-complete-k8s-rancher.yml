@@ -599,34 +599,42 @@
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
           ignore_errors: yes
 
-        - name: Update Helm repositories before Rancher installation
+        - name: Debug Kubernetes and Helm version detection
           shell: |
-            echo "=== Updating Helm repositories ==="
-            helm repo update
+            echo "=== System Info ==="
+            which kubectl
+            which helm
+            echo "=== Kubernetes Version Detection ==="
+            kubectl version --client --output=yaml
+            kubectl version --output=yaml
+            echo "=== Helm Version ==="
+            helm version
             echo "=== Available Rancher versions ==="
             helm search repo rancher-stable/rancher --versions | head -10
+            echo "=== RKE2 Status ==="
+            systemctl status rke2-server --no-pager
+            echo "=== Updating Helm repositories ==="
+            helm repo update
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
-        - name: Install Rancher with complete webhook bypass
+        - name: Install Rancher with direct helm install bypassing version check
           shell: |
             # Create Rancher resources manually without webhook validation
             kubectl create namespace cattle-system --dry-run=client -o yaml | kubectl apply -f -
             
-            # Generate Rancher manifest and apply with webhook validation disabled
-            helm template rancher rancher-stable/rancher \
+            # Direct helm install with version constraints disabled
+            helm install rancher rancher-stable/rancher \
               --namespace cattle-system \
               --set hostname={{ rancher_hostname }} \
               --set bootstrapPassword=admin \
               --set ingress.tls.source=letsEncrypt \
               --set letsEncrypt.email={{ letsencrypt_email }} \
               --set letsEncrypt.ingress.class=nginx \
-              --version {{ rancher_version }} > /tmp/rancher-manifest.yaml
-            
-            # Apply with server-side validation disabled
-            kubectl apply -f /tmp/rancher-manifest.yaml --validate=false --server-side=true || \
-            kubectl apply -f /tmp/rancher-manifest.yaml --validate=false
+              --version {{ rancher_version }} \
+              --disable-openapi-validation \
+              --force
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
