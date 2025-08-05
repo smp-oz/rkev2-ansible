@@ -373,12 +373,45 @@
             helm repo update
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+
+        - name: Debug kubectl availability
+          shell: |
+            echo "=== Checking kubectl locations ==="
+            ls -la /usr/local/bin/kubectl || echo "kubectl not in /usr/local/bin/"
+            ls -la /var/lib/rancher/rke2/bin/kubectl || echo "kubectl not in /var/lib/rancher/rke2/bin/"
+            echo "=== PATH contents ==="
+            echo $PATH
+            echo "=== Attempting to create kubectl symlink ==="
+            if [ -f /var/lib/rancher/rke2/bin/kubectl ]; then
+              ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+              echo "Created symlink from RKE2 bin"
+            else
+              echo "RKE2 kubectl not found"
+            fi
+            echo "=== Final kubectl check ==="
+            which kubectl || echo "kubectl not in PATH"
+            ls -la /usr/local/bin/kubectl || echo "kubectl symlink failed"
+          register: kubectl_debug
+
+        - name: Show kubectl debug output
+          debug:
+            msg: "{{ kubectl_debug.stdout_lines }}"
 
         - name: Verify cluster nodes
-          shell: kubectl get nodes
+          shell: |
+            # Force use full path if symlink failed
+            if [ -f /usr/local/bin/kubectl ]; then
+              kubectl get nodes
+            elif [ -f /var/lib/rancher/rke2/bin/kubectl ]; then
+              /var/lib/rancher/rke2/bin/kubectl get nodes
+            else
+              echo "ERROR: kubectl not found in any location"
+              exit 1
+            fi
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
           register: cluster_nodes
 
         - name: Show cluster status
@@ -400,7 +433,7 @@
           shell: kubectl wait --for=condition=Ready pods -l app=cert-manager -n cert-manager --timeout=300s
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
         - name: Install nginx-ingress controller
           shell: |
@@ -419,7 +452,7 @@
           shell: kubectl wait --for=condition=Ready pods -l app.kubernetes.io/name=ingress-nginx -n ingress-nginx --timeout=300s
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
         - name: Install Rancher
           shell: |
@@ -440,13 +473,13 @@
           shell: kubectl rollout status deploy/rancher -n cattle-system --timeout=600s
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
         - name: Get bootstrap password
           shell: kubectl get secret --namespace cattle-system bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}{{"\n"}}'
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
           register: bootstrap_password
           ignore_errors: true
 
