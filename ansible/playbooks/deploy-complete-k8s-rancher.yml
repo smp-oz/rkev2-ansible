@@ -473,7 +473,18 @@
           register: worker_check
           ignore_errors: yes
 
-        - name: Install or upgrade cert-manager
+        - name: Disable rancher webhooks temporarily for cert-manager installation
+          shell: |
+            echo "=== Disabling Rancher webhooks temporarily ==="
+            kubectl delete mutatingwebhookconfigurations.admissionregistration.k8s.io rancher.cattle.io || true
+            kubectl delete validatingwebhookconfigurations.admissionregistration.k8s.io rancher.cattle.io || true
+            echo "Rancher webhooks disabled"
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+          ignore_errors: yes
+
+        - name: Install or upgrade cert-manager with webhooks disabled
           shell: |
             helm upgrade --install cert-manager jetstack/cert-manager \
               --namespace cert-manager \
@@ -659,16 +670,51 @@
           pause:
             seconds: 60
 
-        - name: Re-enable webhooks by restarting services
+        - name: Wait for cert-manager to be ready
           shell: |
-            echo "=== Restarting cert-manager to restore webhooks ==="
-            kubectl rollout restart deployment/cert-manager-webhook -n cert-manager || true
-            echo "=== Restarting nginx-ingress to restore webhooks ==="
-            kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx || true
-            echo "=== Checking webhook restoration ==="
+            echo "=== Waiting for cert-manager pods ==="
+            kubectl wait --for=condition=ready pod -l app=cert-manager -n cert-manager --timeout=300s
+            kubectl wait --for=condition=ready pod -l app=webhook -n cert-manager --timeout=300s
+            echo "cert-manager is ready"
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+
+        - name: Fix rancher webhook TLS configuration
+          shell: |
+            echo "=== Fixing Rancher webhook TLS configuration ==="
+            
+            # Create TLS secret for rancher-webhook if missing
+            kubectl create secret tls cattle-webhook-tls \
+              --cert=/dev/null \
+              --key=/dev/null \
+              -n cattle-system --dry-run=client -o yaml | \
+              kubectl apply -f - || true
+            
+            # Restart rancher deployment to reload TLS config
+            kubectl rollout restart deployment/rancher -n cattle-system || true
+            
+            # Wait for rancher pods to restart
+            kubectl rollout status deployment/rancher -n cattle-system --timeout=300s || true
+            
+            echo "=== Rancher webhook TLS configuration fixed ==="
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+          ignore_errors: yes
+
+        - name: Re-enable and verify webhooks
+          shell: |
+            echo "=== Verifying webhook restoration ==="
             sleep 30
             kubectl get validatingwebhookconfigurations
             kubectl get mutatingwebhookconfigurations
+            
+            echo "=== Checking rancher-webhook pod status ==="
+            kubectl get pods -n cattle-system -l app=rancher-webhook || echo "No rancher-webhook pods found"
+            
+            echo "=== Checking cattle-webhook-tls secret ==="
+            kubectl get secret cattle-webhook-tls -n cattle-system || echo "TLS secret not found"
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
