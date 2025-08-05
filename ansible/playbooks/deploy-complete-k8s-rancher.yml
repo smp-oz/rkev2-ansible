@@ -9,7 +9,7 @@
     cluster_cidr: "10.42.0.0/16"
     service_cidr: "10.43.0.0/16"
     rancher_hostname: "rancher.smartcorex.com"
-    rancher_version: "2.11.3"
+    rancher_version: "2.12.0"
     
   tasks:
     # ============================================================
