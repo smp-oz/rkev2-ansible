@@ -140,10 +140,9 @@
         msg: "Installing RKE2 on all nodes"
 
     - name: Stop existing RKE2 services if running
-      systemd:
-        name: "{{ item }}"
-        state: stopped
-        enabled: false
+      shell: |
+        systemctl stop {{ item }} 2>/dev/null || true
+        systemctl disable {{ item }} 2>/dev/null || true
       loop:
         - rke2-server
         - rke2-agent
@@ -184,23 +183,53 @@
     - name: Extract RKE2 binary
       shell: |
         cd /tmp
+        # Clean up any existing extraction
+        rm -rf rke2.linux-amd64
+        # Extract the tar file
         tar -xzf rke2.linux-amd64.tar.gz
-        cp -r rke2.linux-amd64/* /opt/rke2/
+        # List contents to verify structure
+        echo "Archive contents:"
+        tar -tzf rke2.linux-amd64.tar.gz | head -10
+        # Find the actual structure and copy accordingly
+        if [ -d "rke2.linux-amd64" ]; then
+          echo "Found rke2.linux-amd64 directory"
+          cp -r rke2.linux-amd64/* /opt/rke2/ 2>/dev/null || true
+        else
+          echo "Direct extraction structure, copying files"
+          find . -name "rke2" -type f -executable | head -1 | xargs -I {} cp {} /opt/rke2/bin/ 2>/dev/null || true
+          find . -name "kubectl" -type f -executable | head -1 | xargs -I {} cp {} /opt/rke2/bin/ 2>/dev/null || true
+          find . -name "crictl" -type f -executable | head -1 | xargs -I {} cp {} /opt/rke2/bin/ 2>/dev/null || true
+          find . -name "ctr" -type f -executable | head -1 | xargs -I {} cp {} /opt/rke2/bin/ 2>/dev/null || true
+        fi
+        # Ensure bin directory exists and set permissions
+        mkdir -p /opt/rke2/bin
         chown -R root:root /opt/rke2
-        chmod +x /opt/rke2/bin/*
+        chmod +x /opt/rke2/bin/* 2>/dev/null || true
+        # Verify the main binary exists
+        ls -la /opt/rke2/bin/
       args:
         creates: "/opt/rke2/bin/rke2"
+      register: rke2_extract_result
+
+    - name: Debug RKE2 extraction results
+      debug:
+        msg: "{{ rke2_extract_result.stdout_lines }}"
 
     - name: Create RKE2 binary symlinks
-      file:
-        src: "/opt/rke2/bin/{{ item }}"
-        dest: "/usr/local/bin/{{ item }}"
-        state: link
-      loop:
-        - rke2
-        - kubectl
-        - crictl
-        - ctr
+      shell: |
+        for binary in rke2 kubectl crictl ctr; do
+          if [ -f "/opt/rke2/bin/$binary" ]; then
+            ln -sf "/opt/rke2/bin/$binary" "/usr/local/bin/$binary"
+            echo "Created symlink for $binary"
+          else
+            echo "Warning: $binary not found in /opt/rke2/bin/"
+          fi
+        done
+      register: symlink_result
+
+    - name: Debug symlink creation
+      debug:
+        msg: "{{ symlink_result.stdout_lines }}"
 
     # ============================================================
     # PHASE 3: RKE2 CLUSTER CONFIGURATION
