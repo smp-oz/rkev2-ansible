@@ -139,6 +139,28 @@
       debug:
         msg: "Installing RKE2 on all nodes"
 
+    - name: Stop existing RKE2 services if running
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - rke2-server
+        - rke2-agent
+      ignore_errors: true
+
+    - name: Clean existing RKE2 installation
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /opt/rke2
+        - /usr/local/bin/rke2
+        - /usr/local/bin/kubectl
+        - /usr/local/bin/crictl
+        - /usr/local/bin/ctr
+      ignore_errors: true
+
     - name: Create RKE2 directories
       file:
         path: "{{ item }}"
@@ -155,16 +177,19 @@
         dest: "/tmp/rke2.linux-amd64.tar.gz"
         mode: '0644'
         timeout: 300
+        force: true
       retries: 3
       delay: 10
 
     - name: Extract RKE2 binary
-      unarchive:
-        src: "/tmp/rke2.linux-amd64.tar.gz"
-        dest: "/opt/rke2"
-        remote_src: true
+      shell: |
+        cd /tmp
+        tar -xzf rke2.linux-amd64.tar.gz
+        cp -r rke2.linux-amd64/* /opt/rke2/
+        chown -R root:root /opt/rke2
+        chmod +x /opt/rke2/bin/*
+      args:
         creates: "/opt/rke2/bin/rke2"
-        extra_opts: [--strip-components=1]
 
     - name: Create RKE2 binary symlinks
       file:
