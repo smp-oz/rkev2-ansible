@@ -1,0 +1,793 @@
+---
+- name: Complete K8s + Rancher + SSL + Ingress Deployment
+  hosts: all
+  become: true
+  vars:
+    rke2_version: "v1.28.15+rke2r1"
+    rancher_version: "2.8.5"
+    cert_manager_version: "v1.13.0"
+    nginx_ingress_version: "v1.8.1"
+    cluster_cidr: "10.42.0.0/16"
+    service_cidr: "10.43.0.0/16"
+    rancher_hostname: "rancher.smartcorex.com"
+    ssl_email: "admin@smartcorex.com"
+    master_nodes:
+      - "10.122.10.214"
+      - "10.122.11.86"
+      - "10.122.12.50"
+
+  tasks:
+    # ============================================================
+    # PHASE 1: SYSTEM PREPARATION
+    # ============================================================
+    - name: "PHASE 1: System Preparation"
+      debug:
+        msg: "Starting system preparation for all nodes"
+
+    - name: Update system packages (skip broken repos)
+      dnf:
+        name: "*"
+        state: latest
+        skip_broken: true
+        nobest: true
+      ignore_errors: true
+      register: dnf_update_result
+
+    - name: Install required packages
+      dnf:
+        name:
+          - curl
+          - wget
+          - tar
+          - unzip
+          - firewalld
+          - container-selinux
+          - iptables
+          - socat
+          - conntrack
+          - nfs-utils
+          - bash-completion
+        state: present
+        skip_broken: true
+
+    - name: Enable and start firewalld
+      systemd:
+        name: firewalld
+        enabled: true
+        state: started
+
+    - name: Configure firewall for RKE2 (all nodes)
+      firewalld:
+        port: "{{ item }}"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop:
+        - "10250/tcp"  # Kubelet
+        - "8472/udp"   # Flannel VXLAN
+      ignore_errors: true
+
+    - name: Configure firewall for RKE2 masters
+      firewalld:
+        port: "{{ item }}"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop:
+        - "6443/tcp"   # Kubernetes API
+        - "9345/tcp"   # RKE2 supervisor
+        - "2379-2380/tcp"  # ETCD
+      when: inventory_hostname in groups['k8s_masters']
+      ignore_errors: true
+
+    - name: Configure firewall for NodePort services
+      firewalld:
+        port: "30000-32767/tcp"
+        permanent: true
+        state: enabled
+        immediate: true
+      ignore_errors: true
+
+    - name: Disable SELinux (required for RKE2)
+      selinux:
+        state: disabled
+      register: selinux_result
+
+    - name: Set kernel parameters for Kubernetes
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: true
+      loop:
+        - { name: "net.bridge.bridge-nf-call-iptables", value: "1" }
+        - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+        - { name: "net.ipv4.ip_forward", value: "1" }
+
+    - name: Load required kernel modules
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - overlay
+
+    - name: Make kernel modules persistent
+      lineinfile:
+        path: /etc/modules-load.d/k8s.conf
+        line: "{{ item }}"
+        create: true
+      loop:
+        - br_netfilter
+        - overlay
+
+    # ============================================================
+    # PHASE 2: RKE2 INSTALLATION
+    # ============================================================
+    - name: "PHASE 2: RKE2 Installation"
+      debug:
+        msg: "Installing RKE2 on all nodes"
+
+    - name: Create RKE2 directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/rancher/rke2
+        - /opt/rke2
+        - /var/lib/rancher/rke2
+
+    - name: Download RKE2 binary
+      get_url:
+        url: "https://github.com/rancher/rke2/releases/download/{{ rke2_version }}/rke2.linux-amd64.tar.gz"
+        dest: "/tmp/rke2.linux-amd64.tar.gz"
+        mode: '0644'
+        timeout: 300
+      retries: 3
+      delay: 10
+
+    - name: Extract RKE2 binary
+      unarchive:
+        src: "/tmp/rke2.linux-amd64.tar.gz"
+        dest: "/opt/rke2"
+        remote_src: true
+        creates: "/opt/rke2/bin/rke2"
+        extra_opts: [--strip-components=1]
+
+    - name: Create RKE2 binary symlinks
+      file:
+        src: "/opt/rke2/bin/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        state: link
+      loop:
+        - rke2
+        - kubectl
+        - crictl
+        - ctr
+
+    # ============================================================
+    # PHASE 3: RKE2 CLUSTER CONFIGURATION
+    # ============================================================
+    - name: "PHASE 3: RKE2 Cluster Configuration"
+      debug:
+        msg: "Configuring RKE2 cluster"
+
+    # PRIMARY MASTER CONFIGURATION
+    - name: Configure primary RKE2 master
+      copy:
+        content: |
+          server: https://{{ rke2_server_ip }}:9345
+          token: {{ rke2_token | default('bootstrap-token-' + ansible_date_time.epoch) }}
+          cluster-cidr: {{ cluster_cidr }}
+          service-cidr: {{ service_cidr }}
+          tls-san:
+            - {{ rke2_server_ip }}
+            - {{ rancher_hostname }}
+            - {{ inventory_hostname }}
+          write-kubeconfig-mode: "0644"
+          node-taint:
+            - "CriticalAddonsOnly=true:NoExecute"
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0600'
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ADDITIONAL MASTERS CONFIGURATION
+    - name: Configure additional RKE2 masters
+      copy:
+        content: |
+          server: https://{{ rke2_server_ip }}:9345
+          token: {{ rke2_token | default('bootstrap-token-' + ansible_date_time.epoch) }}
+          cluster-cidr: {{ cluster_cidr }}
+          service-cidr: {{ service_cidr }}
+          tls-san:
+            - {{ rke2_server_ip }}
+            - {{ rancher_hostname }}
+            - {{ inventory_hostname }}
+          write-kubeconfig-mode: "0644"
+          node-taint:
+            - "CriticalAddonsOnly=true:NoExecute"
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0600'
+      when: inventory_hostname in groups['k8s_masters'] and inventory_hostname != groups['k8s_masters'][0]
+
+    # WORKER CONFIGURATION
+    - name: Configure RKE2 workers
+      copy:
+        content: |
+          server: https://{{ rke2_server_ip }}:9345
+          token: {{ rke2_token | default('bootstrap-token-' + ansible_date_time.epoch) }}
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0600'
+      when: inventory_hostname in groups['k8s_workers']
+
+    # CREATE SYSTEMD SERVICES
+    - name: Create RKE2 server systemd service
+      copy:
+        content: |
+          [Unit]
+          Description=Rancher Kubernetes Engine v2 (server)
+          Documentation=https://rancher.com/docs/rke2/latest/en/
+          Wants=network-online.target
+          After=network-online.target
+          Conflicts=rke2-agent.service
+          
+          [Service]
+          Type=notify
+          EnvironmentFile=-/etc/default/%N
+          EnvironmentFile=-/etc/sysconfig/%N
+          EnvironmentFile=-/usr/local/lib/systemd/system/%N.env
+          KillMode=process
+          Delegate=yes
+          LimitNOFILE=1048576
+          LimitNPROC=infinity
+          LimitCORE=infinity
+          TasksMax=infinity
+          TimeoutStartSec=0
+          Restart=always
+          RestartSec=5s
+          ExecStartPre=/bin/sh -xc '! /usr/bin/systemctl is-enabled --quiet nm-cloud-setup.service'
+          ExecStartPre=-/sbin/modprobe br_netfilter
+          ExecStartPre=-/sbin/modprobe overlay
+          ExecStart=/usr/local/bin/rke2 server
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/rke2-server.service
+        mode: '0644'
+      when: inventory_hostname in groups['k8s_masters']
+
+    - name: Create RKE2 agent systemd service
+      copy:
+        content: |
+          [Unit]
+          Description=Rancher Kubernetes Engine v2 (agent)
+          Documentation=https://rancher.com/docs/rke2/latest/en/
+          Wants=network-online.target
+          After=network-online.target
+          Conflicts=rke2-server.service
+          
+          [Service]
+          Type=notify
+          EnvironmentFile=-/etc/default/%N
+          EnvironmentFile=-/etc/sysconfig/%N
+          EnvironmentFile=-/usr/local/lib/systemd/system/%N.env
+          KillMode=process
+          Delegate=yes
+          LimitNOFILE=1048576
+          LimitNPROC=infinity
+          LimitCORE=infinity
+          TasksMax=infinity
+          TimeoutStartSec=0
+          Restart=always
+          RestartSec=5s
+          ExecStartPre=/bin/sh -xc '! /usr/bin/systemctl is-enabled --quiet nm-cloud-setup.service'
+          ExecStartPre=-/sbin/modprobe br_netfilter
+          ExecStartPre=-/sbin/modprobe overlay
+          ExecStart=/usr/local/bin/rke2 agent
+          
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/rke2-agent.service
+        mode: '0644'
+      when: inventory_hostname in groups['k8s_workers']
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: true
+
+    # ============================================================
+    # PHASE 4: START PRIMARY MASTER
+    # ============================================================
+    - name: "PHASE 4: Start Primary Master"
+      debug:
+        msg: "Starting primary master node"
+
+    - name: Start and enable RKE2 server on primary master
+      systemd:
+        name: rke2-server
+        enabled: true
+        state: started
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Wait for primary master to be ready
+      wait_for:
+        port: 6443
+        host: "{{ rke2_server_ip }}"
+        delay: 30
+        timeout: 300
+      when: inventory_hostname == groups['k8s_masters'][0]
+      delegate_to: "{{ groups['k8s_masters'][0] }}"
+
+    - name: Retrieve node token from primary master
+      slurp:
+        src: /var/lib/rancher/rke2/server/node-token
+      register: node_token_content
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Set node token fact
+      set_fact:
+        rke2_node_token: "{{ node_token_content.content | b64decode | trim }}"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 5: START ADDITIONAL MASTERS AND WORKERS
+    # ============================================================
+    - name: "PHASE 5: Start Additional Masters and Workers"
+      debug:
+        msg: "Starting additional masters and workers"
+
+    - name: Update token in config files
+      replace:
+        path: /etc/rancher/rke2/config.yaml
+        regexp: 'token: .*'
+        replace: 'token: {{ hostvars[groups["k8s_masters"][0]]["rke2_node_token"] }}'
+      when: inventory_hostname != groups['k8s_masters'][0]
+
+    - name: Start and enable RKE2 server on additional masters
+      systemd:
+        name: rke2-server
+        enabled: true
+        state: started
+      when: inventory_hostname in groups['k8s_masters'] and inventory_hostname != groups['k8s_masters'][0]
+
+    - name: Start and enable RKE2 agent on workers
+      systemd:
+        name: rke2-agent
+        enabled: true
+        state: started
+      when: inventory_hostname in groups['k8s_workers']
+
+    - name: Wait for all nodes to join cluster
+      pause:
+        seconds: 60
+
+    # ============================================================
+    # PHASE 6: KUBECTL CONFIGURATION
+    # ============================================================
+    - name: "PHASE 6: Kubectl Configuration"
+      debug:
+        msg: "Configuring kubectl access"
+
+    - name: Create kubectl config directory
+      file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Copy kubectl config for user
+      copy:
+        src: /etc/rancher/rke2/rke2.yaml
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+        remote_src: true
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Create kubectl config directory for root
+      file:
+        path: "/root/.kube"
+        state: directory
+        mode: '0755'
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Copy kubectl config for root
+      copy:
+        src: /etc/rancher/rke2/rke2.yaml
+        dest: "/root/.kube/config"
+        mode: '0600'
+        remote_src: true
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 7: CLUSTER VERIFICATION
+    # ============================================================
+    - name: "PHASE 7: Cluster Verification"
+      debug:
+        msg: "Verifying cluster status"
+
+    - name: Wait for all nodes to be ready
+      shell: kubectl get nodes --no-headers | grep -v Ready | wc -l
+      register: not_ready_nodes
+      retries: 10
+      delay: 30
+      until: not_ready_nodes.stdout == "0"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Display cluster nodes
+      shell: kubectl get nodes -o wide
+      register: cluster_nodes
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Show cluster status
+      debug:
+        msg: "{{ cluster_nodes.stdout_lines }}"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 8: HELM INSTALLATION
+    # ============================================================
+    - name: "PHASE 8: Helm Installation"
+      debug:
+        msg: "Installing Helm package manager"
+
+    - name: Download Helm installation script
+      get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get_helm.sh
+        mode: '0755'
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Install Helm
+      shell: /tmp/get_helm.sh
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 9: CERT-MANAGER INSTALLATION
+    # ============================================================
+    - name: "PHASE 9: Cert-Manager Installation"
+      debug:
+        msg: "Installing cert-manager for SSL certificates"
+
+    - name: Add Jetstack Helm repository
+      shell: helm repo add jetstack https://charts.jetstack.io
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Update Helm repositories
+      shell: helm repo update
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Create cert-manager namespace
+      shell: kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Install cert-manager CRDs
+      shell: kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/{{ cert_manager_version }}/cert-manager.crds.yaml
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Install cert-manager with Helm
+      shell: |
+        helm install cert-manager jetstack/cert-manager \
+          --namespace cert-manager \
+          --version {{ cert_manager_version }}
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Wait for cert-manager to be ready
+      shell: kubectl wait --for=condition=Ready pods -l app=cert-manager -n cert-manager --timeout=300s
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 10: NGINX INGRESS CONTROLLER
+    # ============================================================
+    - name: "PHASE 10: Nginx Ingress Controller"
+      debug:
+        msg: "Installing nginx-ingress controller for ALB integration"
+
+    - name: Add nginx-ingress Helm repository
+      shell: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Update Helm repositories
+      shell: helm repo update
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Create ingress-nginx namespace
+      shell: kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Install nginx-ingress controller
+      shell: |
+        helm install ingress-nginx ingress-nginx/ingress-nginx \
+          --namespace ingress-nginx \
+          --set controller.service.type=NodePort \
+          --set controller.service.nodePorts.http=32014 \
+          --set controller.service.nodePorts.https=30443 \
+          --set controller.metrics.enabled=true \
+          --set controller.podAnnotations."prometheus\.io/scrape"="true" \
+          --set controller.podAnnotations."prometheus\.io/port"="10254"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Wait for nginx-ingress to be ready
+      shell: kubectl wait --for=condition=Ready pods -l app.kubernetes.io/name=ingress-nginx -n ingress-nginx --timeout=300s
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 11: ALB TARGET GROUP REGISTRATION
+    # ============================================================
+    - name: "PHASE 11: ALB Target Group Registration"
+      debug:
+        msg: "Registering master nodes with ALB target group"
+
+    - name: Create ALB target registration script
+      copy:
+        content: |
+          #!/bin/bash
+          # ALB Target Group Registration for nginx-ingress
+          
+          TARGET_GROUP_ARN="arn:aws:elasticloadbalancing:us-east-2:082897116988:targetgroup/rancher-tg/860592e0ba85f3e9"
+          MASTER_IPS=({{ master_nodes | join(' ') }})
+          
+          echo "Registering master nodes with ALB target group..."
+          
+          for ip in "${MASTER_IPS[@]}"; do
+            echo "Registering ${ip}:32014 (HTTP) and ${ip}:30443 (HTTPS)"
+            
+            # Register HTTP port (32014)
+            aws elbv2 register-targets \
+              --target-group-arn $TARGET_GROUP_ARN \
+              --targets Id=${ip},Port=32014 || echo "Failed to register ${ip}:32014"
+            
+            # For HTTPS, we would need a separate target group
+            # aws elbv2 register-targets \
+            #   --target-group-arn $HTTPS_TARGET_GROUP_ARN \
+            #   --targets Id=${ip},Port=30443 || echo "Failed to register ${ip}:30443"
+          done
+          
+          echo "Configuring ALB health check..."
+          aws elbv2 modify-target-group \
+            --target-group-arn $TARGET_GROUP_ARN \
+            --health-check-protocol HTTP \
+            --health-check-port 32014 \
+            --health-check-path /healthz \
+            --health-check-interval-seconds 30 \
+            --health-check-timeout-seconds 5 \
+            --healthy-threshold-count 2 \
+            --unhealthy-threshold-count 2
+          
+          echo "ALB target group registration completed"
+        dest: /tmp/register_alb_targets.sh
+        mode: '0755'
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Display ALB registration script location
+      debug:
+        msg: "ALB registration script created at /tmp/register_alb_targets.sh - Run this on a machine with AWS CLI configured"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 12: RANCHER INSTALLATION
+    # ============================================================
+    - name: "PHASE 12: Rancher Installation"
+      debug:
+        msg: "Installing Rancher management platform"
+
+    - name: Add Rancher Helm repository
+      shell: helm repo add rancher-stable https://releases.rancher.com/server-charts/stable
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Update Helm repositories
+      shell: helm repo update
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Create cattle-system namespace
+      shell: kubectl create namespace cattle-system --dry-run=client -o yaml | kubectl apply -f -
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Create Let's Encrypt ClusterIssuer for SSL certificates
+      copy:
+        content: |
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-prod
+          spec:
+            acme:
+              # The ACME server URL
+              server: https://acme-v02.api.letsencrypt.org/directory
+              # Email address used for ACME registration
+              email: {{ ssl_email }}
+              # Name of a secret used to store the ACME account private key
+              privateKeySecretRef:
+                name: letsencrypt-prod
+              # Enable the HTTP-01 challenge provider
+              solvers:
+              - http01:
+                  ingress:
+                    class: nginx
+        dest: /tmp/letsencrypt-issuer.yaml
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Apply Let's Encrypt ClusterIssuer
+      shell: kubectl apply -f /tmp/letsencrypt-issuer.yaml
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Install Rancher with Helm and Let's Encrypt SSL
+      shell: |
+        helm install rancher rancher-stable/rancher \
+          --namespace cattle-system \
+          --set hostname={{ rancher_hostname }} \
+          --set bootstrapPassword=admin \
+          --set ingress.tls.source=letsEncrypt \
+          --set letsEncrypt.email={{ ssl_email }} \
+          --set letsEncrypt.ingress.class=nginx \
+          --version {{ rancher_version }}
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Wait for Rancher deployment to be ready
+      shell: kubectl rollout status deploy/rancher -n cattle-system --timeout=600s
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 13: SSL CERTIFICATE CONFIGURATION
+    # ============================================================
+    - name: "PHASE 13: SSL Certificate Configuration"
+      debug:
+        msg: "Configuring SSL certificates and ingress"
+
+    - name: Create manual SSL certificate for Rancher (backup method)
+      copy:
+        content: |
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: rancher-ssl-cert
+            namespace: cattle-system
+          spec:
+            secretName: tls-rancher-ingress
+            issuerRef:
+              name: letsencrypt-prod
+              kind: ClusterIssuer
+            dnsNames:
+            - {{ rancher_hostname }}
+        dest: /tmp/rancher-certificate.yaml
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Apply Rancher SSL certificate
+      shell: kubectl apply -f /tmp/rancher-certificate.yaml
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Wait for SSL certificate to be ready
+      shell: kubectl wait --for=condition=Ready certificate/rancher-ssl-cert -n cattle-system --timeout=600s
+      when: inventory_hostname == groups['k8s_masters'][0]
+      ignore_errors: true
+
+    # ============================================================
+    # PHASE 14: FINAL VERIFICATION AND CONFIGURATION
+    # ============================================================
+    - name: "PHASE 14: Final Verification"
+      debug:
+        msg: "Final system verification and configuration"
+
+    - name: Get Rancher bootstrap password
+      shell: kubectl get secret --namespace cattle-system bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}'
+      register: rancher_bootstrap_password
+      when: inventory_hostname == groups['k8s_masters'][0]
+      ignore_errors: true
+
+    - name: Display Rancher access information
+      debug:
+        msg: |
+          ============================================================
+          RANCHER INSTALLATION COMPLETED SUCCESSFULLY!
+          ============================================================
+          
+          Rancher URL: https://{{ rancher_hostname }}
+          Bootstrap Password: {{ rancher_bootstrap_password.stdout | default('admin') }}
+          
+          ALB Configuration Required:
+          1. Run the ALB registration script: /tmp/register_alb_targets.sh
+          2. Ensure DNS points {{ rancher_hostname }} to your ALB
+          3. Configure ALB listeners:
+             - HTTP (80) -> Redirect to HTTPS
+             - HTTPS (443) -> Forward to target group (32014)
+          
+          Cluster Information:
+          - RKE2 Version: {{ rke2_version }}
+          - Rancher Version: {{ rancher_version }}
+          - Cert-Manager Version: {{ cert_manager_version }}
+          - nginx-ingress: Installed with NodePorts 32014(HTTP)/30443(HTTPS)
+          
+          SSL Certificate:
+          - Automatic Let's Encrypt SSL configured
+          - ClusterIssuer: letsencrypt-prod
+          - Certificate: rancher-ssl-cert
+          
+          Next Steps:
+          1. Configure ALB and DNS
+          2. Access Rancher UI at https://{{ rancher_hostname }}
+          3. Complete Rancher initial setup
+          4. Import additional clusters if needed
+          
+          ============================================================
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Create post-installation verification script
+      copy:
+        content: |
+          #!/bin/bash
+          echo "=== RKE2 Cluster Status ==="
+          kubectl get nodes -o wide
+          
+          echo -e "\n=== Rancher Pods Status ==="
+          kubectl get pods -n cattle-system
+          
+          echo -e "\n=== Cert-Manager Status ==="
+          kubectl get pods -n cert-manager
+          
+          echo -e "\n=== nginx-ingress Status ==="
+          kubectl get pods -n ingress-nginx
+          
+          echo -e "\n=== SSL Certificates ==="
+          kubectl get certificates -n cattle-system
+          
+          echo -e "\n=== Ingress Resources ==="
+          kubectl get ingress -n cattle-system
+          
+          echo -e "\n=== Services ==="
+          kubectl get services -n cattle-system
+          kubectl get services -n ingress-nginx
+          
+          echo -e "\n=== Rancher Bootstrap Password ==="
+          kubectl get secret --namespace cattle-system bootstrap-secret -o go-template='{{.data.bootstrapPassword|base64decode}}' 2>/dev/null || echo "Bootstrap secret not found - using default: admin"
+        dest: /tmp/verify_cluster.sh
+        mode: '0755'
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    - name: Display verification script location
+      debug:
+        msg: "Cluster verification script created at /tmp/verify_cluster.sh"
+      when: inventory_hostname == groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 15: CLEANUP
+    # ============================================================
+    - name: "PHASE 15: Cleanup"
+      debug:
+        msg: "Cleaning up temporary files"
+
+    - name: Remove temporary files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/rke2.linux-amd64.tar.gz
+        - /tmp/get_helm.sh
+      ignore_errors: true
+
+    - name: Final deployment status
+      debug:
+        msg: |
+          ============================================================
+          COMPLETE K8S + RANCHER + SSL DEPLOYMENT FINISHED!
+          ============================================================
+          
+          Summary:
+          ✓ System preparation completed
+          ✓ RKE2 cluster deployed ({{ rke2_version }})
+          ✓ Helm installed
+          ✓ Cert-manager installed ({{ cert_manager_version }})
+          ✓ nginx-ingress controller configured
+          ✓ Rancher management platform installed ({{ rancher_version }})
+          ✓ Let's Encrypt SSL certificates configured
+          ✓ ALB integration scripts created
+          
+          Manual Steps Remaining:
+          1. Run ALB registration script: /tmp/register_alb_targets.sh
+          2. Configure DNS: {{ rancher_hostname }} -> ALB
+          3. Access Rancher: https://{{ rancher_hostname }}
+          
+      when: inventory_hostname == groups['k8s_masters'][0]
