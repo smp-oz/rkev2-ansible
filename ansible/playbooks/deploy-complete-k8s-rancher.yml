@@ -473,18 +473,18 @@
         - name: List and disable all problematic webhooks for Rancher installation
           shell: |
             echo "=== Current ValidatingAdmissionWebhooks ==="
-            kubectl get validatingadmissionwebhooks
+            kubectl get validatingwebhookconfigurations
             echo "=== Disabling nginx-ingress webhooks ==="
-            kubectl delete validatingadmissionwebhook ingress-nginx-admission --ignore-not-found=true
-            kubectl delete validatingadmissionwebhook validate.nginx.ingress.kubernetes.io --ignore-not-found=true
+            kubectl delete validatingwebhookconfigurations ingress-nginx-admission --ignore-not-found=true
+            kubectl delete validatingwebhookconfigurations validate.nginx.ingress.kubernetes.io --ignore-not-found=true
             echo "=== Current MutatingAdmissionWebhooks ==="
-            kubectl get mutatingadmissionwebhooks
+            kubectl get mutatingwebhookconfigurations
             echo "=== Disabling cert-manager webhooks temporarily ==="
-            kubectl delete mutatingadmissionwebhook cert-manager-webhook --ignore-not-found=true
-            kubectl delete validatingadmissionwebhook cert-manager-webhook --ignore-not-found=true
+            kubectl delete mutatingwebhookconfigurations cert-manager-webhook --ignore-not-found=true
+            kubectl delete validatingwebhookconfigurations cert-manager-webhook --ignore-not-found=true
             echo "=== Remaining webhooks ==="
-            kubectl get validatingadmissionwebhooks
-            kubectl get mutatingadmissionwebhooks
+            kubectl get validatingwebhookconfigurations
+            kubectl get mutatingwebhookconfigurations
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
@@ -524,8 +524,8 @@
             kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx || true
             echo "=== Checking webhook restoration ==="
             sleep 30
-            kubectl get validatingadmissionwebhooks
-            kubectl get mutatingadmissionwebhooks
+            kubectl get validatingwebhookconfigurations
+            kubectl get mutatingwebhookconfigurations
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
