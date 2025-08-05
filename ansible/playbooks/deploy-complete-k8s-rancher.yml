@@ -359,6 +359,26 @@
           pause:
             seconds: 30
 
+        - name: Check worker agent status and logs
+          shell: |
+            echo "=== RKE2 Agent Service Status ==="
+            systemctl status rke2-agent --no-pager -l
+            echo "=== Recent Agent Logs ==="
+            journalctl -u rke2-agent --no-pager -n 10
+          register: worker_status
+          ignore_errors: yes
+
+        - name: Show worker status
+          debug:
+            msg: "{{ worker_status.stdout_lines }}"
+
+        - name: Restart agent if failed
+          systemd:
+            name: rke2-agent
+            state: restarted
+          when: worker_status.rc != 0
+          ignore_errors: yes
+
       when: inventory_hostname in groups['k8s_workers']
 
     # ============================================================
@@ -398,11 +418,20 @@
           debug:
             msg: "{{ kubectl_debug.stdout_lines }}"
 
-        - name: Verify cluster nodes
+        - name: Verify cluster nodes and check for workers
           shell: |
             # Force use full path if symlink failed
             if [ -f /usr/local/bin/kubectl ]; then
-              kubectl get nodes
+              echo "=== Current Cluster Nodes ==="
+              kubectl get nodes -o wide
+              echo "=== Node Count Summary ==="
+              echo "Total nodes: $(kubectl get nodes --no-headers | wc -l)"
+              echo "Master nodes: $(kubectl get nodes --no-headers | grep -c 'control-plane')"
+              echo "Worker nodes: $(kubectl get nodes --no-headers | grep -v 'control-plane' | wc -l)"
+              echo "=== RKE2 Agent Services Status on All Nodes ==="
+              kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name | while read node; do
+                echo "Node: $node"
+              done
             elif [ -f /var/lib/rancher/rke2/bin/kubectl ]; then
               /var/lib/rancher/rke2/bin/kubectl get nodes
             else
@@ -417,6 +446,23 @@
         - name: Show cluster status
           debug:
             msg: "{{ cluster_nodes.stdout_lines }}"
+
+        - name: Check if worker nodes are missing and rejoin if needed
+          shell: |
+            WORKER_COUNT=$(kubectl get nodes --no-headers | grep -v 'control-plane' | wc -l)
+            if [ "$WORKER_COUNT" -lt 3 ]; then
+              echo "WARNING: Only $WORKER_COUNT worker nodes found, expected 3"
+              echo "This will trigger worker node rejoin process"
+              exit 1
+            else
+              echo "SUCCESS: All 3 worker nodes are present in cluster"
+              exit 0
+            fi
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+          register: worker_check
+          ignore_errors: yes
 
         - name: Install or upgrade cert-manager
           shell: |
@@ -449,7 +495,13 @@
               --create-namespace \
               --set controller.service.type=NodePort \
               --set controller.service.nodePorts.http=30080 \
-              --set controller.service.nodePorts.https=30443
+              --set controller.service.nodePorts.https=30443 \
+              --set controller.metrics.enabled=true \
+              --set controller.config.enable-real-ip=true \
+              --set controller.config.use-forwarded-headers=true \
+              --set defaultBackend.enabled=true \
+              --set defaultBackend.image.repository=k8s.gcr.io/defaultbackend-amd64 \
+              --set defaultBackend.image.tag=1.5
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
@@ -462,6 +514,54 @@
 
         - name: Wait for nginx-ingress admission controller to be ready
           shell: kubectl wait --for=condition=Available deployment/ingress-nginx-controller -n ingress-nginx --timeout=300s
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+
+        - name: Create default backend for nginx-ingress health checks
+          shell: |
+            kubectl apply -f - <<EOF
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: default-backend
+              namespace: ingress-nginx
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: default-backend
+              template:
+                metadata:
+                  labels:
+                    app: default-backend
+                spec:
+                  containers:
+                  - name: default-backend
+                    image: k8s.gcr.io/defaultbackend-amd64:1.5
+                    ports:
+                    - containerPort: 8080
+                    livenessProbe:
+                      httpGet:
+                        port: 8080
+                        path: /healthz
+                    readinessProbe:
+                      httpGet:
+                        port: 8080
+                        path: /healthz
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: default-backend
+              namespace: ingress-nginx
+            spec:
+              ports:
+              - port: 80
+                targetPort: 8080
+              selector:
+                app: default-backend
+            EOF
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
