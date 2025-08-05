@@ -93,24 +93,14 @@
         state: disabled
       register: selinux_result
 
-    - name: Set kernel parameters for Kubernetes
-      sysctl:
-        name: "{{ item.name }}"
-        value: "{{ item.value }}"
-        state: present
-        reload: true
-      loop:
-        - { name: "net.bridge.bridge-nf-call-iptables", value: "1" }
-        - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
-        - { name: "net.ipv4.ip_forward", value: "1" }
-
-    - name: Load required kernel modules
+    - name: Load required kernel modules first
       modprobe:
         name: "{{ item }}"
         state: present
       loop:
         - br_netfilter
         - overlay
+      ignore_errors: true
 
     - name: Make kernel modules persistent
       lineinfile:
@@ -120,6 +110,27 @@
       loop:
         - br_netfilter
         - overlay
+
+    - name: Wait for bridge netfilter module to be ready
+      pause:
+        seconds: 5
+
+    - name: Set kernel parameters for Kubernetes
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: false
+        sysctl_file: /etc/sysctl.d/k8s.conf
+      loop:
+        - { name: "net.bridge.bridge-nf-call-iptables", value: "1" }
+        - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+        - { name: "net.ipv4.ip_forward", value: "1" }
+      ignore_errors: true
+
+    - name: Reload sysctl settings
+      shell: sysctl --system
+      ignore_errors: true
 
     # ============================================================
     # PHASE 2: RKE2 INSTALLATION
