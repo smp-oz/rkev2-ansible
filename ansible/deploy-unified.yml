@@ -1,0 +1,3 @@
+---
+# Main deployment playbook - calls the comprehensive single playbook
+- import_playbook: playbooks/deploy-complete-k8s-rancher.yml
