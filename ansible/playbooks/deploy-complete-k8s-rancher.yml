@@ -418,16 +418,16 @@
           debug:
             msg: "{{ cluster_nodes.stdout_lines }}"
 
-        - name: Install cert-manager
+        - name: Install or upgrade cert-manager
           shell: |
-            helm install cert-manager jetstack/cert-manager \
+            helm upgrade --install cert-manager jetstack/cert-manager \
               --namespace cert-manager \
               --create-namespace \
               --version v1.13.0 \
               --set installCRDs=true
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
         - name: Wait for cert-manager to be ready
           shell: kubectl wait --for=condition=Ready pods -l app=cert-manager -n cert-manager --timeout=300s
@@ -446,7 +446,7 @@
               --set controller.service.nodePorts.https=30443
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
         - name: Wait for nginx-ingress to be ready
           shell: kubectl wait --for=condition=Ready pods -l app.kubernetes.io/name=ingress-nginx -n ingress-nginx --timeout=300s
@@ -454,9 +454,9 @@
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
-        - name: Install Rancher
+        - name: Install or upgrade Rancher
           shell: |
-            helm install rancher rancher-stable/rancher \
+            helm upgrade --install rancher rancher-stable/rancher \
               --namespace cattle-system \
               --create-namespace \
               --set hostname={{ rancher_hostname }} \
@@ -467,7 +467,7 @@
               --version {{ rancher_version }}
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-            PATH: "{{ ansible_env.PATH }}:/usr/local/bin"
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
         - name: Wait for Rancher deployment to be ready
           shell: kubectl rollout status deploy/rancher -n cattle-system --timeout=600s
