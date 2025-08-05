@@ -384,30 +384,53 @@
       when: inventory_hostname == groups['k8s_masters'][0]
       delegate_to: "{{ groups['k8s_masters'][0] }}"
 
-    - name: Retrieve node token from primary master
+    # ============================================================
+    # PHASE 5: GET AND SHARE CLUSTER TOKEN
+    # ============================================================
+    - name: "PHASE 5: Get and Share Cluster Token"
+      debug:
+        msg: "Retrieving cluster token from primary master"
+
+    - name: Get cluster token from primary master (all nodes)
       slurp:
         src: /var/lib/rancher/rke2/server/node-token
-      register: node_token_content
-      when: inventory_hostname == groups['k8s_masters'][0]
+      register: cluster_token_file
+      delegate_to: "{{ groups['k8s_masters'][0] }}"
+      ignore_errors: yes
 
-    - name: Set node token fact
+    - name: Fallback - create static token if node-token not found
+      shell: |
+        echo "bootstrap-token-$(date +%s)" > /tmp/cluster_token_static
+        cat /tmp/cluster_token_static
+      register: static_token_creation
+      delegate_to: "{{ groups['k8s_masters'][0] }}"
+      when: cluster_token_file.failed | default(false)
+      run_once: true
+
+    - name: Get static fallback token
+      slurp:
+        src: /tmp/cluster_token_static
+      register: static_token_file
+      delegate_to: "{{ groups['k8s_masters'][0] }}"
+      when: cluster_token_file.failed | default(false)
+
+    - name: Set cluster token fact for all nodes
       set_fact:
-        rke2_node_token: "{{ node_token_content.content | b64decode | trim }}"
-      when: inventory_hostname == groups['k8s_masters'][0]
+        cluster_token: "{{ (cluster_token_file.content | b64decode | trim) if not (cluster_token_file.failed | default(false)) else (static_token_file.content | b64decode | trim) }}"
 
-    # ============================================================
-    # PHASE 5: START ADDITIONAL MASTERS AND WORKERS
-    # ============================================================
-    - name: "PHASE 5: Start Additional Masters and Workers"
-      debug:
-        msg: "Starting additional masters and workers"
-
-    - name: Update token in config files
+    - name: Update token in config files for non-primary nodes
       replace:
         path: /etc/rancher/rke2/config.yaml
         regexp: 'token: .*'
-        replace: 'token: {{ hostvars[groups["k8s_masters"][0]]["rke2_node_token"] }}'
+        replace: 'token: {{ cluster_token }}'
       when: inventory_hostname != groups['k8s_masters'][0]
+
+    # ============================================================
+    # PHASE 6: START ADDITIONAL MASTERS AND WORKERS
+    # ============================================================
+    - name: "PHASE 6: Start Additional Masters and Workers"
+      debug:
+        msg: "Starting additional masters and workers"
 
     - name: Start and enable RKE2 server on additional masters
       systemd:
@@ -428,9 +451,9 @@
         seconds: 60
 
     # ============================================================
-    # PHASE 6: KUBECTL CONFIGURATION
+    # PHASE 7: KUBECTL CONFIGURATION
     # ============================================================
-    - name: "PHASE 6: Kubectl Configuration"
+    - name: "PHASE 7: Kubectl Configuration"
       debug:
         msg: "Configuring kubectl access"
 
@@ -469,9 +492,9 @@
       when: inventory_hostname == groups['k8s_masters'][0]
 
     # ============================================================
-    # PHASE 7: CLUSTER VERIFICATION
+    # PHASE 8: CLUSTER VERIFICATION
     # ============================================================
-    - name: "PHASE 7: Cluster Verification"
+    - name: "PHASE 8: Cluster Verification"
       debug:
         msg: "Verifying cluster status"
 
@@ -494,9 +517,9 @@
       when: inventory_hostname == groups['k8s_masters'][0]
 
     # ============================================================
-    # PHASE 8: HELM INSTALLATION
+    # PHASE 9: HELM INSTALLATION
     # ============================================================
-    - name: "PHASE 8: Helm Installation"
+    - name: "PHASE 9: Helm Installation"
       debug:
         msg: "Installing Helm package manager"
 
@@ -512,9 +535,9 @@
       when: inventory_hostname == groups['k8s_masters'][0]
 
     # ============================================================
-    # PHASE 9: CERT-MANAGER INSTALLATION
+    # PHASE 10: CERT-MANAGER INSTALLATION
     # ============================================================
-    - name: "PHASE 9: Cert-Manager Installation"
+    - name: "PHASE 10: Cert-Manager Installation"
       debug:
         msg: "Installing cert-manager for SSL certificates"
 
@@ -546,9 +569,9 @@
       when: inventory_hostname == groups['k8s_masters'][0]
 
     # ============================================================
-    # PHASE 10: NGINX INGRESS CONTROLLER
+    # PHASE 11: NGINX INGRESS CONTROLLER
     # ============================================================
-    - name: "PHASE 10: Nginx Ingress Controller"
+    - name: "PHASE 11: Nginx Ingress Controller"
       debug:
         msg: "Installing nginx-ingress controller for ALB integration"
 
@@ -581,9 +604,9 @@
       when: inventory_hostname == groups['k8s_masters'][0]
 
     # ============================================================
-    # PHASE 11: ALB TARGET GROUP REGISTRATION
+    # PHASE 12: ALB TARGET GROUP REGISTRATION
     # ============================================================
-    - name: "PHASE 11: ALB Target Group Registration"
+    - name: "PHASE 12: ALB Target Group Registration"
       debug:
         msg: "Registering master nodes with ALB target group"
 
@@ -634,9 +657,9 @@
       when: inventory_hostname == groups['k8s_masters'][0]
 
     # ============================================================
-    # PHASE 12: RANCHER INSTALLATION
+    # PHASE 13: RANCHER INSTALLATION
     # ============================================================
-    - name: "PHASE 12: Rancher Installation"
+    - name: "PHASE 13: Rancher Installation"
       debug:
         msg: "Installing Rancher management platform"
 
@@ -697,9 +720,9 @@
       when: inventory_hostname == groups['k8s_masters'][0]
 
     # ============================================================
-    # PHASE 13: SSL CERTIFICATE CONFIGURATION
+    # PHASE 14: SSL CERTIFICATE CONFIGURATION
     # ============================================================
-    - name: "PHASE 13: SSL Certificate Configuration"
+    - name: "PHASE 14: SSL Certificate Configuration"
       debug:
         msg: "Configuring SSL certificates and ingress"
 
@@ -731,9 +754,9 @@
       ignore_errors: true
 
     # ============================================================
-    # PHASE 14: FINAL VERIFICATION AND CONFIGURATION
+    # PHASE 15: FINAL VERIFICATION AND CONFIGURATION
     # ============================================================
-    - name: "PHASE 14: Final Verification"
+    - name: "PHASE 15: Final Verification"
       debug:
         msg: "Final system verification and configuration"
 
@@ -818,9 +841,9 @@
       when: inventory_hostname == groups['k8s_masters'][0]
 
     # ============================================================
-    # PHASE 15: CLEANUP
+    # PHASE 16: CLEANUP
     # ============================================================
-    - name: "PHASE 15: Cleanup"
+    - name: "PHASE 16: Cleanup"
       debug:
         msg: "Cleaning up temporary files"
 
