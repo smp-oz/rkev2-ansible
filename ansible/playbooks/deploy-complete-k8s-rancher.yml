@@ -619,6 +619,22 @@
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
+        - name: Remove existing Rancher installation if present
+          shell: |
+            # Check and remove existing Rancher installation
+            echo "=== Checking for existing Rancher installation ==="
+            if helm list -n cattle-system | grep -q rancher; then
+              echo "Found existing Rancher installation, removing..."
+              helm uninstall rancher -n cattle-system || true
+              echo "Waiting 15 seconds for cleanup..."
+              sleep 15
+            else
+              echo "No existing Rancher installation found"
+            fi
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+
         - name: Install Rancher with direct helm install bypassing version check
           shell: |
             # Create Rancher resources manually without webhook validation
