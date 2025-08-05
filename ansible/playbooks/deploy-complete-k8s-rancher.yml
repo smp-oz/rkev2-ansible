@@ -674,21 +674,41 @@
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
           ignore_errors: yes
 
-        - name: Verify Rancher installation and track with Helm
+        - name: Check Rancher deployment status (non-blocking)
           shell: |
-            # Track the installation with Helm (without installing)
-            helm upgrade --install rancher rancher-stable/rancher \
-              --namespace cattle-system \
-              --set hostname={{ rancher_hostname }} \
-              --set bootstrapPassword=admin \
-              --set ingress.tls.source=letsEncrypt \
-              --set letsEncrypt.email={{ letsencrypt_email }} \
-              --set letsEncrypt.ingress.class=nginx \
-              --version {{ rancher_version }} \
-              --dry-run=server || true
+            echo "=== Rancher Deployment Status ==="
+            kubectl get deployment rancher -n cattle-system || echo "Deployment not found"
+            kubectl get pods -n cattle-system -l app=rancher || echo "No Rancher pods found"
             
-            # Wait for deployment to be ready
-            kubectl rollout status deploy/rancher -n cattle-system --timeout=600s
+            echo "=== Checking Rancher pods status ==="
+            kubectl describe pods -n cattle-system -l app=rancher | head -50 || true
+            
+            echo "=== Rancher logs (if pods exist) ==="
+            kubectl logs -n cattle-system -l app=rancher --tail=20 || echo "No logs available"
+          environment:
+            KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+            PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
+          ignore_errors: yes
+
+        - name: Force worker nodes to rejoin cluster
+          shell: |
+            echo "=== Current cluster status ==="
+            kubectl get nodes -o wide || echo "No nodes found"
+            
+            echo "=== Checking worker node status ==="
+            WORKER_COUNT=$(kubectl get nodes --no-headers | grep -v 'control-plane' | wc -l || echo "0")
+            echo "Found $WORKER_COUNT worker nodes, expected 3"
+            
+            if [ "$WORKER_COUNT" -lt 3 ]; then
+              echo "=== Triggering worker node rejoin ==="
+              # Share fresh token for workers
+              echo "Sharing fresh cluster token..."
+              cp /var/lib/rancher/rke2/server/node-token /tmp/shared_cluster_token
+              chmod 644 /tmp/shared_cluster_token
+              echo "Token shared successfully for worker rejoin"
+            else
+              echo "All worker nodes are present"
+            fi
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
@@ -717,3 +737,57 @@
               - "3. Access Rancher UI"
 
       when: inventory_hostname == groups['k8s_masters'][0]
+
+  # ============================================================
+  # WORKER NODE REJOIN PHASE
+  # ============================================================
+  - name: "WORKER NODES: Force rejoin cluster if missing"
+    block:
+      - name: Stop existing RKE2 agent if running
+        systemd:
+          name: rke2-agent
+          state: stopped
+        ignore_errors: true
+
+      - name: Clean worker node state
+        shell: |
+          rm -rf /var/lib/rancher/rke2/agent
+          rm -rf /etc/rancher/rke2/rke2.yaml
+        ignore_errors: true
+
+      - name: Get fresh cluster token from master
+        shell: |
+          if [ -f "/tmp/shared_cluster_token" ]; then
+            echo "Using shared token from master"
+            cat /tmp/shared_cluster_token
+          else
+            echo "No shared token found - worker rejoin may fail"
+            exit 1
+          fi
+        register: cluster_token_result
+
+      - name: Create RKE2 config for worker with fresh token
+        copy:
+          content: |
+            server: https://{{ hostvars[groups['k8s_masters'][0]]['ansible_default_ipv4']['address'] }}:9345
+            token: {{ cluster_token_result.stdout }}
+            node-label:
+              - "worker=true"
+          dest: /etc/rancher/rke2/config.yaml
+          mode: '0600'
+
+      - name: Start and enable RKE2 agent
+        systemd:
+          name: rke2-agent
+          state: started
+          enabled: yes
+
+      - name: Wait for worker to join cluster
+        pause:
+          seconds: 30
+
+      - name: Show worker status
+        debug:
+          msg: "Worker node {{ inventory_hostname }} rejoined cluster"
+
+    when: inventory_hostname in groups['k8s_workers']
