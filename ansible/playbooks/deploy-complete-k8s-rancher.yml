@@ -471,9 +471,7 @@
             seconds: 30
 
         - name: Temporarily disable nginx-ingress webhook for Rancher installation
-          shell: |
-            # Delete the ValidatingAdmissionWebhook that's causing issues
-            kubectl delete validatingadmissionwebhook ingress-nginx-admission || true
+          shell: kubectl delete validatingadmissionwebhook ingress-nginx-admission || true
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
@@ -495,9 +493,7 @@
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
 
         - name: Re-enable nginx-ingress webhook (optional)
-          shell: |
-            # Restart nginx-ingress to restore webhook if needed
-            kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx || true
+          shell: kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx || true
           environment:
             KUBECONFIG: /etc/rancher/rke2/rke2.yaml
             PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/var/lib/rancher/rke2/bin"
