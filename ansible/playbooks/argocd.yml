@@ -46,28 +46,7 @@
               type: ClusterIP
               
             ingress:
-              enabled: true
-              ingressClassName: nginx
-              annotations:
-                nginx.ingress.kubernetes.io/ssl-redirect: "true"
-                nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
-                nginx.ingress.kubernetes.io/proxy-body-size: "0"
-                nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-                nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-                nginx.ingress.kubernetes.io/server-snippet: |
-                  grpc_read_timeout 300;
-                  grpc_send_timeout 300;
-                  client_body_timeout 60;
-                  client_header_timeout 60;
-                  client_max_body_size 1m;
-              hostname: {{ argocd_domain }}
-              path: /
-              pathType: Prefix
-              tls: true
-              extraTls:
-                - secretName: argocd-server-tls
-                  hosts:
-                    - {{ argocd_domain }}
+              enabled: false  # We'll create ingress manually
                     
             extraArgs:
               - --insecure
@@ -115,6 +94,47 @@
       register: deployment_wait
       retries: 3
       delay: 10
+
+    - name: Create ArgoCD ingress manually
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        cat <<EOF | {{ kubectl_location.stdout }} apply -f -
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: argocd-server
+          namespace: {{ argocd_namespace }}
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+            nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+            nginx.ingress.kubernetes.io/proxy-body-size: "0"
+            nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+            nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+            nginx.ingress.kubernetes.io/server-snippet: |
+              grpc_read_timeout 300;
+              grpc_send_timeout 300;
+              client_body_timeout 60;
+              client_header_timeout 60;
+              client_max_body_size 1m;
+        spec:
+          ingressClassName: nginx
+          rules:
+          - host: {{ argocd_domain }}
+            http:
+              paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: argocd-server
+                    port:
+                      number: 80
+          tls:
+          - hosts:
+            - {{ argocd_domain }}
+            secretName: argocd-server-tls
+        EOF
+      register: ingress_result
 
     - name: Get ArgoCD admin initial password
       shell: |
