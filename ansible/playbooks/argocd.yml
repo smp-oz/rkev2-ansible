@@ -1,6 +1,6 @@
 ---
 - name: Install ArgoCD on Kubernetes Cluster
-  hosts: primary_master
+  hosts: master-1
   become: true
   vars:
     argocd_namespace: argocd
