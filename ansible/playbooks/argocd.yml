@@ -8,18 +8,26 @@
     argocd_version: "5.51.6"  # Latest stable ArgoCD Helm chart version
     
   tasks:
+    - name: Find kubectl location
+      shell: find /usr/local/bin /var/lib/rancher/rke2/bin /opt/rke2/bin -name kubectl 2>/dev/null | head -1
+      register: kubectl_location
+      
     - name: Create ArgoCD namespace
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /opt/rke2/bin/kubectl create namespace {{ argocd_namespace }} --dry-run=client -o yaml | /opt/rke2/bin/kubectl apply -f -
+        {{ kubectl_location.stdout }} create namespace {{ argocd_namespace }} --dry-run=client -o yaml | {{ kubectl_location.stdout }} apply -f -
       register: namespace_result
       changed_when: "'created' in namespace_result.stdout"
 
+    - name: Find helm location
+      shell: find /usr/local/bin /var/lib/rancher/rke2/bin /opt/rke2/bin -name helm 2>/dev/null | head -1
+      register: helm_location
+      
     - name: Add ArgoCD Helm repository
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /opt/rke2/bin/helm repo add argo https://argoproj.github.io/argo-helm || true
-        /opt/rke2/bin/helm repo update
+        {{ helm_location.stdout }} repo add argo https://argoproj.github.io/argo-helm || true
+        {{ helm_location.stdout }} repo update
       register: repo_result
       changed_when: "'added' in repo_result.stdout"
 
@@ -89,7 +97,7 @@
     - name: Install ArgoCD using Helm
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /opt/rke2/bin/helm upgrade --install argocd argo/argo-cd \
+        {{ helm_location.stdout }} upgrade --install argocd argo/argo-cd \
           --namespace {{ argocd_namespace }} \
           --version {{ argocd_version }} \
           --values /tmp/argocd-values.yaml \
@@ -100,7 +108,7 @@
     - name: Wait for ArgoCD server deployment to be ready
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /opt/rke2/bin/kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n {{ argocd_namespace }}
+        {{ kubectl_location.stdout }} wait --for=condition=available --timeout=300s deployment/argocd-server -n {{ argocd_namespace }}
       register: deployment_wait
       retries: 3
       delay: 10
@@ -108,7 +116,7 @@
     - name: Get ArgoCD admin initial password
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /opt/rke2/bin/kubectl get secret argocd-initial-admin-secret -n {{ argocd_namespace }} -o jsonpath='{.data.password}' | base64 -d
+        {{ kubectl_location.stdout }} get secret argocd-initial-admin-secret -n {{ argocd_namespace }} -o jsonpath='{.data.password}' | base64 -d
       register: argocd_password_result
       retries: 3
       delay: 5
@@ -137,7 +145,7 @@
     - name: Show ArgoCD pods status
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /opt/rke2/bin/kubectl get pods -n {{ argocd_namespace }}
+        {{ kubectl_location.stdout }} get pods -n {{ argocd_namespace }}
       register: argocd_pods_result
 
     - name: Display ArgoCD pod status
@@ -147,7 +155,7 @@
     - name: Verify ArgoCD ingress configuration
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
-        /opt/rke2/bin/kubectl describe ingress argocd-server -n {{ argocd_namespace }}
+        {{ kubectl_location.stdout }} describe ingress argocd-server -n {{ argocd_namespace }}
       register: argocd_ingress_result
 
     - name: Show ArgoCD ingress details
@@ -161,13 +169,13 @@
           - "Manual Verification Commands:"
           - "==================================="
           - "# Check ArgoCD pods:"
-          - "/opt/rke2/bin/kubectl get pods -n {{ argocd_namespace }}"
+          - "kubectl get pods -n {{ argocd_namespace }}"
           - ""
           - "# Check ArgoCD ingress:"
-          - "/opt/rke2/bin/kubectl describe ingress argocd-server -n {{ argocd_namespace }}"
+          - "kubectl describe ingress argocd-server -n {{ argocd_namespace }}"
           - ""
           - "# Get admin password:"
-          - "/opt/rke2/bin/kubectl get secret argocd-initial-admin-secret -n {{ argocd_namespace }} -o jsonpath='{.data.password}' | base64 -d"
+          - "kubectl get secret argocd-initial-admin-secret -n {{ argocd_namespace }} -o jsonpath='{.data.password}' | base64 -d"
           - ""
           - "# Test internal access:"
           - "curl -k -H 'Host: {{ argocd_domain }}' https://localhost:30443/"
