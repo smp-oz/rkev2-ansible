@@ -9,33 +9,19 @@
     
   tasks:
     - name: Create ArgoCD namespace
-      kubernetes.core.k8s:
-        name: "{{ argocd_namespace }}"
-        api_version: v1
-        kind: Namespace
-        state: present
-        kubeconfig: /etc/rancher/rke2/rke2.yaml
-      environment:
-        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        kubectl create namespace {{ argocd_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+      register: namespace_result
+      changed_when: "'created' in namespace_result.stdout"
 
     - name: Add ArgoCD Helm repository
-      kubernetes.core.helm_repository:
-        name: argo
-        repo_url: https://argoproj.github.io/argo-helm
-        state: present
-      environment:
-        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-
-    - name: Update Helm repositories
-      kubernetes.core.helm:
-        name: dummy
-        chart_ref: argo/argo-cd
-        release_namespace: "{{ argocd_namespace }}"
-        state: absent
-        update_repo_cache: yes
-      environment:
-        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-      ignore_errors: yes
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        helm repo add argo https://argoproj.github.io/argo-helm || true
+        helm repo update
+      register: repo_result
+      changed_when: "'added' in repo_result.stdout"
 
     - name: Create ArgoCD Helm values file
       copy:
@@ -101,52 +87,35 @@
         dest: /tmp/argocd-values.yaml
       
     - name: Install ArgoCD using Helm
-      kubernetes.core.helm:
-        name: argocd
-        chart_ref: argo/argo-cd
-        chart_version: "{{ argocd_version }}"
-        release_namespace: "{{ argocd_namespace }}"
-        create_namespace: false
-        values_files:
-          - /tmp/argocd-values.yaml
-        wait: true
-        wait_condition:
-          type: Ready
-          status: "True"
-        wait_timeout: 600
-      environment:
-        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        helm upgrade --install argocd argo/argo-cd \
+          --namespace {{ argocd_namespace }} \
+          --version {{ argocd_version }} \
+          --values /tmp/argocd-values.yaml \
+          --wait --timeout 600s
+      register: helm_result
+      changed_when: "'installed' in helm_result.stdout or 'upgraded' in helm_result.stdout"
 
     - name: Wait for ArgoCD server deployment to be ready
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: Deployment
-        name: argocd-server
-        namespace: "{{ argocd_namespace }}"
-        kubeconfig: /etc/rancher/rke2/rke2.yaml
-        wait_condition:
-          type: Available
-          status: "True"
-        wait_sleep: 10
-        wait_timeout: 300
-      environment:
-        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n {{ argocd_namespace }}
+      register: deployment_wait
+      retries: 3
+      delay: 10
 
     - name: Get ArgoCD admin initial password
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Secret
-        name: argocd-initial-admin-secret
-        namespace: "{{ argocd_namespace }}"
-        kubeconfig: /etc/rancher/rke2/rke2.yaml
-      environment:
-        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-      register: argocd_secret
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        kubectl get secret argocd-initial-admin-secret -n {{ argocd_namespace }} -o jsonpath='{.data.password}' | base64 -d
+      register: argocd_password_result
+      retries: 3
+      delay: 5
       
-    - name: Decode ArgoCD admin password
+    - name: Set ArgoCD admin password fact
       set_fact:
-        argocd_admin_password: "{{ argocd_secret.resources[0].data.password | b64decode }}"
-      when: argocd_secret.resources | length > 0
+        argocd_admin_password: "{{ argocd_password_result.stdout }}"
 
     - name: Display ArgoCD access information
       debug:
@@ -166,37 +135,24 @@
           - "==================================="
 
     - name: Show ArgoCD pods status
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Pod
-        namespace: "{{ argocd_namespace }}"
-        kubeconfig: /etc/rancher/rke2/rke2.yaml
-      environment:
-        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-      register: argocd_pods
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        kubectl get pods -n {{ argocd_namespace }}
+      register: argocd_pods_result
 
     - name: Display ArgoCD pod status
       debug:
-        msg: "{{ item.metadata.name }}: {{ item.status.phase }}"
-      loop: "{{ argocd_pods.resources }}"
+        msg: "{{ argocd_pods_result.stdout_lines }}"
 
     - name: Verify ArgoCD ingress configuration
-      kubernetes.core.k8s_info:
-        api_version: networking.k8s.io/v1
-        kind: Ingress
-        name: argocd-server
-        namespace: "{{ argocd_namespace }}"
-        kubeconfig: /etc/rancher/rke2/rke2.yaml
-      environment:
-        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
-      register: argocd_ingress
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        kubectl describe ingress argocd-server -n {{ argocd_namespace }}
+      register: argocd_ingress_result
 
     - name: Show ArgoCD ingress details
       debug:
-        msg:
-          - "Ingress Class: {{ argocd_ingress.resources[0].spec.ingressClassName | default('Not set') }}"
-          - "Host: {{ argocd_ingress.resources[0].spec.rules[0].host }}"
-          - "Backend Service: {{ argocd_ingress.resources[0].spec.rules[0].http.paths[0].backend.service.name }}"
+        msg: "{{ argocd_ingress_result.stdout_lines }}"
 
     - name: Final verification commands
       debug:
