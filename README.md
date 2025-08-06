@@ -8,18 +8,18 @@ Production-ready RKE2 Kubernetes cluster deployment on AWS with unified master a
 
 ### Current Infrastructure IPs
 **Masters:**
-- master-1: 10.122.10.214 (Primary)
-- master-2: 10.122.11.86
-- master-3: 10.122.12.50
+- master-1: 10.122.10.68 (Primary)
+- master-2: 10.122.11.60
+- master-3: 10.122.12.162
 
 **Workers:**
-- worker-1: 10.122.10.27
-- worker-2: 10.122.11.227
-- worker-3: 10.122.12.99
+- worker-1: 10.122.10.211
+- worker-2: 10.122.11.84
+- worker-3: 10.122.12.58
 
 **Ansible Controller:**
-- Private: 10.122.1.49
-- Public: 18.191.71.210
+- Private: 10.122.1.35
+- Public: 18.118.207.128
 
 ### When IPs Change (Cost Management)
 When recreating AWS infrastructure, update:
@@ -149,18 +149,18 @@ Update `/etc/hosts` or internal DNS:
 ansible-playbook -i ansible/inventory/hosts-onprem.yml ansible/playbooks/deploy-complete-k8s-rancher.yml
 ```
 
-### Infrastructure Components (Updated August 5, 2025)
-- **3 Kubernetes Masters with RKE2**: Control plane nodes (10.122.10.214, 10.122.11.86, 10.122.12.50)
-- **3 Kubernetes Workers**: Data plane nodes (10.122.10.27, 10.122.11.227, 10.122.12.99)
-- **1 Ansible Controller**: Bastion host for secure access (10.122.1.49 / Public: 18.191.71.210)
-- **ALB**: Application Load Balancer for Rancher at rancher.smartcorex.com (rancher-alb-704246084.us-east-2.elb.amazonaws.com)
+### Infrastructure Components (Updated August 6, 2025)
+- **3 Kubernetes Masters with RKE2**: Control plane nodes (10.122.10.68, 10.122.11.60, 10.122.12.162)
+- **3 Kubernetes Workers**: Data plane nodes (10.122.10.211, 10.122.11.84, 10.122.12.58)
+- **1 Ansible Controller**: Bastion host for secure access (10.122.1.35 / Public: 18.118.207.128)
+- **ALB**: Application Load Balancer for Rancher at rancher.smartcorex.com (rancher-alb-970471551.us-east-2.elb.amazonaws.com)
 
 ### New Unified RKE2 Architecture
 
 This system now uses a **unified RKE2 master architecture** for better reliability and simplified management:
 
-#### Master Nodes with Integrated RKE2 (Control Plane) - 10.122.10.214, 10.122.11.86, 10.122.12.50
-- **Primary Master (10.122.10.214)**: Initializes the cluster and generates tokens
+#### Master Nodes with Integrated RKE2 (Control Plane) - 10.122.10.68, 10.122.11.60, 10.122.12.162
+- **Primary Master (10.122.10.68)**: Initializes the cluster and generates tokens
 - **Additional Masters**: Join as additional RKE2 servers for high availability
 - **Functions**:
   - RKE2 cluster management (ETCD, API server, scheduler)
@@ -169,7 +169,7 @@ This system now uses a **unified RKE2 master architecture** for better reliabili
   - **Rancher UI runs on these master nodes**
   - Cluster token generation and certificate management
 
-#### Kubernetes Worker Nodes (Data Plane) - 10.122.10.27, 10.122.11.227, 10.122.12.99
+#### Kubernetes Worker Nodes (Data Plane) - 10.122.10.211, 10.122.11.84, 10.122.12.58
 - **Purpose**: Runs actual applications and workloads
 - **Connection**: Joins cluster using token from primary master
 - **Functions**:
@@ -204,11 +204,11 @@ terraform apply
 ### 2. Setup Ansible Controller
 ```bash
 # Copy SSH key and ansible directory
-scp -i ~/.ssh/SMP-ANSIBLE.pem ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.191.71.210:~/.ssh/
-scp -i ~/.ssh/SMP-ANSIBLE.pem -r ansible/ ec2-user@18.191.71.210:~/
+scp -i ~/.ssh/SMP-ANSIBLE.pem ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.118.207.128:~/.ssh/
+scp -i ~/.ssh/SMP-ANSIBLE.pem -r ansible/ ec2-user@18.118.207.128:~/
 
 # SSH to controller and install Ansible
-ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.191.71.210
+ssh -i ~/.ssh/SMP-ANSIBLE.pem ec2-user@18.118.207.128
 chmod 600 ~/.ssh/SMP-ANSIBLE.pem
 
 # Install Ansible on RHEL 9
